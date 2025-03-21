@@ -1,0 +1,3 @@
+**Important Note:** The `board_matrix` represents the chessboard oriented with the black knight logo (horse) in the bottom left corner of the physical board.
+
+For our project, we can predict the positions in any orientation, so in our verification process, we should consider all the possible orientations of the board. I did it this way so that in the future if we want to predict the positions in respect to the black knight logo, we can do it easily.
