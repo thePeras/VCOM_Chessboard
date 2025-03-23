@@ -13,18 +13,19 @@ ret, th_global = cv2.threshold(blur_img, 200, 255, cv2.THRESH_BINARY)
 
 # Get the contours of the board
 contours, hierarchy = cv2.findContours(th_global, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
 # Get the largest contour
 largest_area = 0
 largest_contour = None
+
 for cnt in contours:
-    area = cv2.contourArea(cnt)
+    contour_ch = cv2.convexHull(cnt)
+    area = cv2.contourArea(contour_ch)
     if area > largest_area:
         largest_area = area
-        largest_contour = cnt
+        largest_contour = contour_ch
 
-# Draw the largest contour
-# cv2.drawContours(img, [largest_contour], 0, (0, 255, 0), 2)
+contour_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)  # Convert grayscale to BGR for colored drawing
+cv2.drawContours(contour_img, [largest_contour], 0, (0, 0, 255), 3)  # Draw the largest contour in red
 
 # Get the bounding box of the largest contour
 #x, y, w, h = cv2.boundingRect(largest_contour)
@@ -69,6 +70,7 @@ warped_img = cv2.warpPerspective(img, warp_matrix, (img.shape[1], img.shape[0]))
 
 # Show images
 cv2.imshow('Original Image', img)
+cv2.imshow('Largest Contour', contour_img)
 cv2.imshow('Warped Image', warped_img)
 cv2.imshow('Global Threshold', th_global)
 
