@@ -40,15 +40,15 @@ def process_image(image_path, output_dir):
     # Find the closest point of the countour to the (0, 0) point
     def euclidean_distance(p1, p2):
         return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
-    
+        
     top_left  = largest_contour[0][0]
     top_left_comp = (0, 0)
-    bottom_left = largest_contour[0][-1]
+    bottom_left = largest_contour[0][0]
     bottom_left_comp = (0, img.shape[0])
     top_right = largest_contour[0][0]
-    top_right_comp = (img.shape[0], 0)
-    bottom_right = largest_contour[0][-1]
-    bottom_right_comp = (img.shape[0], img.shape[0])
+    top_right_comp = (img.shape[1], 0)
+    bottom_right = largest_contour[0][0]
+    bottom_right_comp = (img.shape[1], img.shape[0])
     
     for i in range(len(largest_contour)):
         point = largest_contour[i][0]
@@ -64,10 +64,10 @@ def process_image(image_path, output_dir):
     # Draw the points on a copy of the original image
     points_img = img.copy()
     points_img = cv2.cvtColor(points_img, cv2.COLOR_GRAY2BGR)
-    cv2.circle(points_img, tuple(top_left), 5, (0, 0, 255), -1)
-    cv2.circle(points_img, tuple(bottom_left), 5, (0, 0, 255), -1)
-    cv2.circle(points_img, tuple(top_right), 5, (0, 0, 255), -1)
-    cv2.circle(points_img, tuple(bottom_right), 5, (0, 0, 255), -1)
+    cv2.circle(points_img, tuple(top_left), 15, (0, 0, 255), -1)
+    cv2.circle(points_img, tuple(bottom_left), 15, (0, 0, 255), -1)
+    cv2.circle(points_img, tuple(top_right), 15, (0, 0, 255), -1)
+    cv2.circle(points_img, tuple(bottom_right), 15, (0, 0, 255), -1)
     
     # Create the warp matrix based on the points and the destination points
     warp_matrix = cv2.getPerspectiveTransform(np.float32([top_left, bottom_left, top_right, bottom_right]),
@@ -94,11 +94,17 @@ def process_image(image_path, output_dir):
 output_dir = 'output_images'
 os.makedirs(output_dir, exist_ok=True)
 
+
 # Process all images in the images directory
+
 images_dir = './data/images'
 for filename in os.listdir(images_dir):
     if filename.endswith(('.jpg', '.jpeg', '.png')):
         image_path = os.path.join(images_dir, filename)
         process_image(image_path, output_dir)
+
+
+#image_path = "/home/adriano/Desktop/Projetos/chessboard-computer-vision/data/images/G000_IMG102.jpg"
+#process_image(image_path, output_dir)
 
 print(f"All images processed. Results saved to {output_dir}")
