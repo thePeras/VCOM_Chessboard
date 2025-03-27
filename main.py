@@ -41,14 +41,14 @@ def process_image(image_path, output_dir):
     def euclidean_distance(p1, p2):
         return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
     
-    top_left = largest_contour[0][0]
+    top_left  = largest_contour[0][0]
     top_left_comp = (0, 0)
-    bottom_left = largest_contour[0][0]
+    bottom_left = largest_contour[0][-1]
     bottom_left_comp = (0, img.shape[0])
     top_right = largest_contour[0][0]
-    top_right_comp = (img.shape[1], 0)
-    bottom_right = largest_contour[0][0]
-    bottom_right_comp = (img.shape[1], img.shape[0])
+    top_right_comp = (img.shape[0], 0)
+    bottom_right = largest_contour[0][-1]
+    bottom_right_comp = (img.shape[0], img.shape[0])
     
     for i in range(len(largest_contour)):
         point = largest_contour[i][0]
@@ -71,18 +71,21 @@ def process_image(image_path, output_dir):
     
     # Create the warp matrix based on the points and the destination points
     warp_matrix = cv2.getPerspectiveTransform(np.float32([top_left, bottom_left, top_right, bottom_right]),
-                                               np.float32([top_left_comp, bottom_left_comp, top_right_comp, bottom_right_comp]))
-    
+                                            np.float32([top_left_comp, bottom_left_comp, top_right_comp, bottom_right_comp]))
+
     # Apply the warp matrix to the image
     warped_img = cv2.warpPerspective(img, warp_matrix, (img.shape[1], img.shape[0]))
     
     # Save images
     base_filename = os.path.splitext(os.path.basename(image_path))[0]
-    #cv2.imwrite(os.path.join(output_dir, f'{base_filename}_original.jpg'), img)
-    #cv2.imwrite(os.path.join(output_dir, f'{base_filename}_corners.jpg'), points_img)
-    cv2.imwrite(os.path.join(output_dir, f'{base_filename}_contour.jpg'), contour_img)
-    cv2.imwrite(os.path.join(output_dir, f'{base_filename}_warped.jpg'), warped_img)
-    cv2.imwrite(os.path.join(output_dir, f'{base_filename}_threshold.jpg'), th_global)
+    image_folder = os.path.join(output_dir, base_filename)
+    os.makedirs(image_folder, exist_ok=True)
+
+    cv2.imwrite(os.path.join(image_folder,  f'{base_filename}_original.jpg'), img)
+    cv2.imwrite(os.path.join(image_folder, f'{base_filename}_corners.jpg'), points_img)
+    cv2.imwrite(os.path.join(image_folder, f'{base_filename}_contour.jpg'), contour_img)
+    cv2.imwrite(os.path.join(image_folder, f'{base_filename}_warped.jpg'), warped_img)
+    cv2.imwrite(os.path.join(image_folder, f'{base_filename}_threshold.jpg'), th_global)
 
     print(f"Processed {base_filename}")
 

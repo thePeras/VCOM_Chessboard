@@ -174,3 +174,5 @@ cython_debug/
 .pypirc
 
 data/images/
+output_images/
+*.DS_Store
