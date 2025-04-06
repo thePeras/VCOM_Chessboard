@@ -122,6 +122,22 @@ def process_all_images():
 #image_path = PATH_TO_IMAGE
 #process_image(image_path, output_dir)
 
+# Position of the pieces on the board (8x8 matrix with 0/1 values)
+def get_board(image_path):
+    # TODO
+    return []
+
+# Position of the pieces on the image (bounding boxes)
+def get_detected_pieces(image_path):
+    # TODO
+    return []
+
+# Total number of black/white pieces on the board
+def get_number_of_pieces(image_path):
+    # TODO
+    # This method is just an intersection of the board with the detected pieces bounding boxes
+    return 0
+
 
 if __name__ == "__main__":
     if not os.path.exists('input.json'):
@@ -136,9 +152,9 @@ if __name__ == "__main__":
         image_path = os.path.join("data/", image) # TODO: Delete data/ on submission
         output.append({
             "image": image_path,
-            "num_pieces": 0,
-            "board": [],
-            "detected_pieces": []
+            "num_pieces": get_number_of_pieces(image_path),
+            "board": get_board(image_path),
+            "detected_pieces": get_detected_pieces(image_path),
         })
     
     with open('output.json', 'w') as f:

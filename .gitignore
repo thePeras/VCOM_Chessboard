@@ -177,5 +177,5 @@ data/images/
 output_images/
 *.DS_Store
 
-input.json
-output.json
+./input.json
+./output.json

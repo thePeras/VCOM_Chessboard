@@ -1,0 +1,14 @@
+[
+    {
+        "image": "data/images/G000_IMG062.jpg",
+        "num_pieces": 0,
+        "board": [],
+        "detected_pieces": []
+    },
+    {
+        "image": "data/images/G000_IMG087.jpg",
+        "num_pieces": 0,
+        "board": [],
+        "detected_pieces": []
+    }
+]
