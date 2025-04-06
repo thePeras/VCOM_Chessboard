@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 import os
+import json
 
 def process_image(image_path, output_dir):
     # Load Image
@@ -107,13 +108,40 @@ os.makedirs(output_dir, exist_ok=True)
 
 # Process all images in the images directory
 images_dir = './data/images'
-for filename in os.listdir(images_dir):
-    if filename.endswith(('.jpg', '.jpeg', '.png')):
-        image_path = os.path.join(images_dir, filename)
-        process_image(image_path, output_dir)
+
+def process_all_images():
+    for filename in os.listdir(images_dir):
+        if filename.endswith(('.jpg', '.jpeg', '.png')):
+            image_path = os.path.join(images_dir, filename)
+            process_image(image_path, output_dir)
+    
+    print(f"All images processed. Results saved to {output_dir}")
+
 
 # Uncomment the following line to process a single image
 #image_path = PATH_TO_IMAGE
 #process_image(image_path, output_dir)
 
-print(f"All images processed. Results saved to {output_dir}")
+
+if __name__ == "__main__":
+    if not os.path.exists('input.json'):
+        print("input.json file not found.")
+        exit(1)
+
+    with open('input.json', 'r') as f:
+        data = json.load(f)
+
+    output = []
+    for image in data['image_files']:
+        image_path = os.path.join("data/", image) # TODO: Delete data/ on submission
+        output.append({
+            "image": image_path,
+            "num_pieces": 0,
+            "board": [],
+            "detected_pieces": []
+        })
+    
+    with open('output.json', 'w') as f:
+        json.dump(output, f, indent=4)
+    
+    print("Output JSON file created.")

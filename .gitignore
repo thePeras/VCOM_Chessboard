@@ -176,3 +176,6 @@ cython_debug/
 data/images/
 output_images/
 *.DS_Store
+
+input.json
+output.json
