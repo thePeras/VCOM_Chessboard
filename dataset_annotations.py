@@ -36,8 +36,8 @@ def get_piece_position(piece: str):
     Get the position of the piece.
     """
     piece = piece.lower()
-    row = ord(piece[0]) - ord('a')
-    col = ord(piece[1]) - ord('1')
+    row = ord(piece[0]) - ord("a")
+    col = ord(piece[1]) - ord("1")
     return row, col
 
 
@@ -66,16 +66,19 @@ def get_annotations_by_image_name(image_name, corner_annotations, piece_annotati
 
     for piece in piece_annotations:
         if piece["image_id"] == image_id:
-            ans["detected_pieces"].append({
-                "xmin": piece["bbox"][0],
-                "ymin": piece["bbox"][1],
-                "xmax": piece["bbox"][0] + piece["bbox"][2],
-                "ymax": piece["bbox"][1] + piece["bbox"][3],
-            })
+            ans["detected_pieces"].append(
+                {
+                    "xmin": piece["bbox"][0],
+                    "ymin": piece["bbox"][1],
+                    "xmax": piece["bbox"][0] + piece["bbox"][2],
+                    "ymax": piece["bbox"][1] + piece["bbox"][3],
+                }
+            )
 
             r, c = get_piece_position(piece["chessboard_position"])
             ans["board"][r][c] = 1
     return ans
+
 
 def draw_bboxes(image, image_annotations, predictions: Optional[list] = None):
     """
@@ -95,6 +98,7 @@ def draw_bboxes(image, image_annotations, predictions: Optional[list] = None):
 
     return image
 
+
 def draw_corners(image, image_annotations, predictions: Optional[list] = None):
     """
     Show corners of the image.
@@ -107,6 +111,7 @@ def draw_corners(image, image_annotations, predictions: Optional[list] = None):
 
     return image
 
+
 def print_board(board):
     """
     Print the chessboard.
@@ -114,6 +119,7 @@ def print_board(board):
     for row in board:
         print(row)
     print()
+
 
 def from_annotation_to_output_json(image_name, annotation):
     """
@@ -133,8 +139,11 @@ def from_annotation_to_output_json(image_name, annotation):
 
     return ans
 
+
 def draw_annotations(image_name, image_path, corner_annotations, piece_annotations):
-    image_annotations = get_annotations_by_image_name(image_name, corner_annotations, piece_annotations)
+    image_annotations = get_annotations_by_image_name(
+        image_name, corner_annotations, piece_annotations
+    )
 
     image = cv2.imread(image_path)
     image = draw_bboxes(image, image_annotations, [])
@@ -143,7 +152,15 @@ def draw_annotations(image_name, image_path, corner_annotations, piece_annotatio
 
     return image
 
-def evaluate_predictions(image_annotations, predictions):
+
+def evaluate_predictions(
+    image_annotations,
+    predictions,
+    eval_corners: bool = True,
+    eval_num_pieces: bool = True,
+    eval_board: bool = True,
+    verbose: bool = True,
+):
     true_board = image_annotations["board"]
     true_num_pieces = sum([sum(row) for row in true_board])
     # true_bboxs = image_annotations["detected_pieces"] # don't need this for now
@@ -152,30 +169,37 @@ def evaluate_predictions(image_annotations, predictions):
     pred_num_pieces = sum([sum(row) for row in pred_board])
     # pred_bboxs = predictions["detected_pieces"]   # don't need this for now
 
-    # Eval number of pieces
-    num_pieces_diff = abs(true_num_pieces - pred_num_pieces)
+    if eval_num_pieces:
+        # Eval number of pieces
+        num_pieces_diff = abs(true_num_pieces - pred_num_pieces)
+        if verbose:
+            print(f"Num pieces diff: {num_pieces_diff}")
 
-    # Now eval the board
-    board_diff = 0
-    for i in range(8):
-        for j in range(8):
-            if true_board[i][j] != pred_board[i][j]:
-                board_diff += 1
+    if eval_board:
+        # Now eval the board
+        board_diff = 0
+        for i in range(8):
+            for j in range(8):
+                if true_board[i][j] != pred_board[i][j]:
+                    board_diff += 1
+        if verbose:
+            print(f"Board diff: {board_diff}")
 
-    # Now eval the corners
-    corner_names = ["bottom_left", "bottom_right", "top_left", "top_right"]
+    if eval_corners:
+        # Now eval the corners
+        corner_names = ["bottom_left", "bottom_right", "top_left", "top_right"]
 
-    corners_mse = 0
-    for corner_name in corner_names:
-        true_corner = image_annotations["corners"][corner_name]
-        pred_corner = predictions["corners"][corner_name]
-        corners_mse += (true_corner[0] - pred_corner[0]) ** 2 + (true_corner[1] - pred_corner[1]) ** 2
-    corners_mse = corners_mse / len(corner_names)
-    corners_mse = corners_mse ** 0.5
-
-    print(f"Num pieces diff: {num_pieces_diff}")
-    print(f"Board diff: {board_diff}")
-    print(f"Corners MSE: {corners_mse}")
+        corners_mse = 0
+        for corner_name in corner_names:
+            true_corner = image_annotations["corners"][corner_name]
+            pred_corner = predictions["corners"][corner_name]
+            corners_mse += (true_corner[0] - pred_corner[0]) ** 2 + (
+                true_corner[1] - pred_corner[1]
+            ) ** 2
+        corners_mse = corners_mse / len(corner_names)
+        corners_mse = corners_mse**0.5
+        if verbose:
+            print(f"Corners MSE: {corners_mse}")
 
     return num_pieces_diff, board_diff, corners_mse
 
@@ -201,7 +225,9 @@ def run_all(corner_annotations, piece_annotations):
         # image_annotation_info = image_annotations[image_name]
 
         output_path = os.path.join(output_dir, image_name)
-        result_image = draw_annotations(image_name, image_path, corner_annotations, piece_annotations)
+        result_image = draw_annotations(
+            image_name, image_path, corner_annotations, piece_annotations
+        )
         cv2.imwrite(output_path, result_image)
         print(f"Saved {output_path}")
 
