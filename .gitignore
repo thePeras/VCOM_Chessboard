@@ -176,3 +176,6 @@ cython_debug/
 data/images/
 output_images/
 *.DS_Store
+annotated_images/
+complete_dataset/*
+!complete_dataset/annotations.json
