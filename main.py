@@ -153,9 +153,13 @@ def get_number_of_pieces(image_path):
     # This method is just an intersection of the board with the detected pieces bounding boxes
     return 0
 
-def process_all_images(output_dir, output_config, evaluate_predictions: bool = True):
+def process_all_images(output_dir, output_config, eval_predictions: bool = True):
     images_dir = './data/images'
     output = []
+
+    if eval_predictions:
+        dataset = get_dataset()
+
     for filename in os.listdir(images_dir):
         if filename.endswith(('.jpg', '.jpeg', '.png')):
             image_path = os.path.join(images_dir, filename)
@@ -167,7 +171,7 @@ def process_all_images(output_dir, output_config, evaluate_predictions: bool = T
             })
 
             image_output_dict = process_image(image_path, output_dir, output_config)
-            if evaluate_predictions:
+            if eval_predictions:
                 image_annotations = get_annotations_by_image_name(filename, dataset)
                 evaluations = evaluate_predictions(
                     image_annotations,
