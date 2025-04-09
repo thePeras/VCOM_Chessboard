@@ -3,6 +3,7 @@ import cv2
 import os
 from typing import Optional
 import json
+import pandas as pd
 
 from dataset_annotations import (
     evaluate_predictions,
@@ -159,6 +160,7 @@ def process_all_images(output_dir, output_config, eval_predictions: bool = True)
 
     if eval_predictions:
         dataset = get_dataset()
+        image_evaluations = []
 
     for filename in os.listdir(images_dir):
         if filename.endswith(('.jpg', '.jpeg', '.png')):
@@ -180,7 +182,14 @@ def process_all_images(output_dir, output_config, eval_predictions: bool = True)
                     eval_num_pieces=False,
                     verbose=True,
                 )
+                image_evaluations.append({"image_path": image_path, **evaluations})
                 print(evaluations)
+
+    if eval_predictions:
+        too_much_corner_error = 60000
+        evaluations = pd.DataFrame(image_evaluations)
+        bad_corners = evaluations[evaluations["corners"] >= too_much_corner_error]
+        print(bad_corners)
 
     with open('output.json', 'w') as f:
         json.dump(output, f, indent=4)
@@ -231,9 +240,9 @@ if __name__ == "__main__":
     # --- Configure output options ---
     output_config = {
         'original': True,
-        'corners': False,
-        'contour': False,
-        'threshold': False,
+        'corners': True,
+        'contour': True,
+        'threshold': True,
         'warped': True,
         'canny_edges': True,
         'merged_lines': True
