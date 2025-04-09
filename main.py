@@ -452,23 +452,26 @@ def process_input(output_dir, output_config, eval_predictions: bool = True):
     print("Output JSON file created.")
 
 
-def stitch_warped_images(output_dir, grid_size=None, output_filename="../stitched_warped_images.jpg"):
-    warped_images = []
+def stitch_images(output_dir, image_type='warped',  grid_size=(7,8), output_filename=None):
+    target_images = []
     for root, dirs, files in os.walk(output_dir):
         for file in files:
-            if file.endswith('_warped.jpg'):
-                warped_images.append(os.path.join(root, file))
+            if file.endswith(f'_{image_type}.jpg'):
+                target_images.append(os.path.join(root, file))
     
-    if not warped_images:
-        print("No warped images found.")
+    if not target_images:
+        print(f"No {image_type} images found.")
         return None
     
-    warped_images.sort()
+    target_images.sort()
+    
+    if output_filename is None:
+        output_filename = f"stitched_{image_type}_images.jpg"
     
     images = []
     max_height, max_width = 0, 0
     
-    for img_path in warped_images:
+    for img_path in target_images:
         img = cv2.imread(img_path)
         if img is None:
             print(f"Warning: Could not load image {img_path}")
@@ -513,13 +516,14 @@ def stitch_warped_images(output_dir, grid_size=None, output_filename="../stitche
     output_path = os.path.join(output_dir, output_filename)
     cv2.imwrite(output_path, canvas)
     
-    print(f"Stitched {len(images)} images into grid {grid_size} at {output_path}")
+    print(f"Stitched {len(images)} {image_type} images into grid {grid_size} at {output_path}")
     return output_path
 
 
 if __name__ == "__main__":
     # --- Delete output directory if it exists ---
     output_dir = 'output_images'
+    
     if os.path.exists(output_dir):
         print(f"Deleting existing output directory: {output_dir}")
         import shutil
@@ -534,21 +538,21 @@ if __name__ == "__main__":
 
     # --- Configure output options ---
     output_config = {
-        'original': True,
-        'corners': True,
-        'contour': True,
-        'threshold': True,
-        'warped': True,
-        'clahe': True,
-        'blurred_warped': True,
-        'canny_edges': True,
-        'dilated': True,
-        'hough_lines': True,
-        'hough_lines_rectified': True,
-        'filtered_intersections': True,
+        'original': False,
+        'corners': False,
+        'contour': False,
+        'threshold': False,
+        'warped': False,
+        'clahe': False,
+        'blurred_warped': False,
+        'canny_edges': False,
+        'dilated': False,
+        'hough_lines': False,
+        'hough_lines_rectified': False,
+        'filtered_intersections': False,
         'pieces': True,
     }
 
-    #process_all_images(output_dir, output_config, eval_predictions=False)
-    process_input(output_dir, output_config, eval_predictions=False)
-    #stitch_warped_images(output_dir, grid_size=(7,8))
+    process_all_images(output_dir, output_config, eval_predictions=False)
+    #process_input(output_dir, output_config, eval_predictions=False)
+    stitch_images(output_dir, image_type='pieces')
