@@ -3,7 +3,8 @@ import cv2
 import os
 import json
 
-def process_image(image_path, output_dir):
+
+def process_image(image_path, output_dir, output_config):
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         print(f"Failed to load image: {image_path}")
@@ -92,11 +93,19 @@ def process_image(image_path, output_dir):
     image_folder = os.path.join(output_dir, base_filename)
     os.makedirs(image_folder, exist_ok=True)
 
-    cv2.imwrite(os.path.join(image_folder, f'{base_filename}_original.jpg'), img)
-    cv2.imwrite(os.path.join(image_folder, f'{base_filename}_corners.jpg'), points_img)
-    cv2.imwrite(os.path.join(image_folder, f'{base_filename}_contour.jpg'), contour_img)
-    cv2.imwrite(os.path.join(image_folder, f'{base_filename}_warped.jpg'), warped_img)
-    cv2.imwrite(os.path.join(image_folder, f'{base_filename}_threshold.jpg'), th_global)
+
+    output_handlers = [
+        ('original', lambda: img),
+        ('corners', lambda: points_img),
+        ('contour', lambda: contour_img),
+        ('threshold', lambda: th_global),
+        ('warped', lambda: warped_img),
+        ('canny_edges', lambda: cv2.Canny(warped_img, 100, 200))
+    ]
+    for output_type, get_image in output_handlers:
+        if output_config.get(output_type, False):
+            image = get_image()
+            cv2.imwrite(os.path.join(image_folder, f'{base_filename}_{output_type}.jpg'), image)
 
     print(f"Processed {base_filename}")
     
@@ -116,7 +125,7 @@ def get_number_of_pieces(image_path):
     # This method is just an intersection of the board with the detected pieces bounding boxes
     return 0
 
-def process_all_images(output_dir):
+def process_all_images(output_dir, output_config):
     images_dir = './data/images'
     output = []
     for filename in os.listdir(images_dir):
@@ -128,11 +137,15 @@ def process_all_images(output_dir):
                 "board": get_board(image_path),
                 "detected_pieces": get_detected_pieces(image_path),
             })
-            process_image(image_path, output_dir)
+            process_image(image_path, output_dir, output_config)
+
+    with open('output.json', 'w') as f:
+        json.dump(output, f, indent=4)
     
+    print("Output JSON file created.")
     print(f"All images processed. Results saved to {output_dir}")
 
-def process_input(output_dir):
+def process_input(output_dir, output_config):
     if not os.path.exists('input.json'):
         print("input.json file not found.")
         exit(1)
@@ -149,7 +162,7 @@ def process_input(output_dir):
             "board": get_board(image_path),
             "detected_pieces": get_detected_pieces(image_path),
         })
-        process_image(image_path, output_dir)
+        process_image(image_path, output_dir, output_config)
     
     with open('output.json', 'w') as f:
         json.dump(output, f, indent=4)
@@ -158,9 +171,31 @@ def process_input(output_dir):
 
 
 if __name__ == "__main__":
+    # --- Delete output directory if it exists ---
     output_dir = 'output_images'
+    if os.path.exists(output_dir):
+        print(f"Deleting existing output directory: {output_dir}")
+        import shutil
+        try:
+            shutil.rmtree(output_dir)
+            print(f"Successfully deleted output directory: {output_dir}")
+        except Exception as e:
+            print(f"Error deleting output directory: {e}")
+    
+    print(f"Creating output directory: {output_dir}")
     os.makedirs(output_dir, exist_ok=True)
 
-    #process_all_images(output_dir)
-    #process_input(output_dir)
+    # --- Configure output options ---
+    output_config = {
+        'original': True,
+        'corners': False,
+        'contour': False,
+        'threshold': False,
+        'warped': True,
+        'canny_edges': True,
+        'merged_lines': True
+    }
+
+    process_all_images(output_dir, output_config)
+    #process_input(output_dir, output_config)
 
