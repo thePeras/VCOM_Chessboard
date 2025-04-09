@@ -53,7 +53,6 @@ def filter_and_rectify_hough_lines(lines, image_shape, angle_threshold=10, dista
 
     return rectified_verticals, rectified_horizontals, verticals, horizontals
 
-
 def compute_intersections(verticals, horizontals):
     intersections = []
     for x in verticals:
@@ -99,6 +98,92 @@ def filter_intersections_by_distance(intersections, center):
         print(f"Warning: Only found {len(filtered_intersections)} valid intersections with minimum distance of 250 pixels")
     
     return filtered_intersections, square_side
+
+
+def has_piece2(image, square_vertices):
+    """ CLAUDE
+    Determine if a chess piece exists within the given square on the board.
+    
+    Args:
+        image: Grayscale image of the chess board
+        square_vertices: List of 4 (x,y) points that define the square to check
+    
+    Returns:
+        Boolean indicating whether a piece exists in the square
+    """
+    # Convert vertices to numpy array for easier manipulation
+    vertices = np.array(square_vertices, dtype=np.int32)
+    
+    # Create a mask for the square region
+    mask = np.zeros(image.shape, dtype=np.uint8)
+    cv2.fillPoly(mask, [vertices], 255)
+    
+    # Apply mask to get only the square region
+    square_region = cv2.bitwise_and(image, image, mask=mask)
+    
+    # Get only the pixels that are part of the square (non-zero in mask)
+    square_pixels = square_region[mask > 0]
+    
+    if len(square_pixels) == 0:
+        return False
+    
+    # Calculate statistics for the square
+    mean_intensity = np.mean(square_pixels)
+    std_intensity = np.std(square_pixels)
+    
+    # Calculate histogram of the square region
+    hist = cv2.calcHist([square_pixels], [0], None, [256], [0, 256])
+    hist = hist.flatten() / len(square_pixels)  # Normalize histogram
+    
+    # Calculate the peak-to-valley ratio (a measure of bimodality)
+    # High PVR suggests presence of both dark piece and light square (or vice versa)
+    peak_indices = np.where(hist > 0.02)[0]  # Find significant peaks
+    
+    if len(peak_indices) >= 2:
+        # Find the valley (minimum) between the highest two peaks
+        peak_pairs = []
+        for i in range(len(peak_indices)):
+            for j in range(i+1, len(peak_indices)):
+                if abs(peak_indices[i] - peak_indices[j]) > 30:  # Ensure peaks are sufficiently separated
+                    peak_pairs.append((peak_indices[i], peak_indices[j]))
+        
+        if peak_pairs:
+            pvr = 0
+            for p1, p2 in peak_pairs:
+                min_idx = min(p1, p2)
+                max_idx = max(p1, p2)
+                valley = np.min(hist[min_idx:max_idx+1])
+                if valley > 0:
+                    peak_val = min(hist[p1], hist[p2])
+                    current_pvr = peak_val / valley
+                    pvr = max(pvr, current_pvr)
+            
+            # High std and PVR indicate presence of piece
+            if std_intensity > 40 and pvr > 2.0:
+                return True
+    
+    # Additional check: detect edges within the square region
+    # First create a copy of the masked region
+    square_img = np.zeros_like(image)
+    square_img[mask > 0] = square_pixels
+    
+    # Apply edge detection to the square
+    edges = cv2.Canny(square_img, 50, 150)
+    edge_pixels = np.count_nonzero(edges)
+    
+    # If there are significant edges and high standard deviation, likely a piece
+    if edge_pixels > 100 and std_intensity > 35:
+        return True
+    
+    # If high contrast within the square, likely a piece
+    if std_intensity > 50:
+        return True
+    
+    return False
+
+def has_piece(image, square_vertices):
+    # check if there is half of an ellipse in the square
+    return True
 
     
 def process_image(image_path, output_dir: Optional[str] = None, output_config: Optional[dict] = None):
@@ -251,6 +336,27 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     else:
         print(f"No lines detected in {image_path}")
 
+
+    # sort filtered_intersections by y coordinate and then by x coordinate
+    filtered_intersections.sort(key=lambda p: (p[1], p[0]))
+    
+    board = [[0] * 8 for _ in range(8)]  # placeholder for board
+
+    # Iterate over the squares and check for pieces
+    for i in range(8):
+        for j in range(8):
+            # Get coordinates for all 4 corners of the square
+            square_corners = [
+                filtered_intersections[i * 9 + j],
+                filtered_intersections[i * 9 + j + 1],
+                filtered_intersections[(i + 1) * 9 + j + 1],
+                filtered_intersections[(i + 1) * 9 + j],
+            ]
+
+            if has_piece(warped_img, square_corners):
+                board[i][j] = 1
+
+
     if output_dir is not None:
         base_filename = os.path.splitext(os.path.basename(image_path))[0]
         image_folder = os.path.join(output_dir, base_filename)
@@ -275,7 +381,6 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
                 image = get_image()
                 cv2.imwrite(os.path.join(image_folder, f'{base_filename}_{output_type}.jpg'), image)
 
-    board = [[0] * 8 for _ in range(8)]  # placeholder for board
     predictions = {
         "image": image_path,
         "corners": {
@@ -289,7 +394,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
         "num_pieces": sum([sum(row) for row in board]),
     }
 
-    print()
+    print(predictions['num_pieces'])
     print(f"Processed {base_filename}")
     return predictions
 
@@ -462,10 +567,10 @@ if __name__ == "__main__":
         'canny_edges': False,
         'dilated': False,
         'hough_lines': False,
-        'hough_lines_rectified': True,
+        'hough_lines_rectified': False,
         'filtered_intersections': True,
     }
 
-    process_all_images(output_dir, output_config)
-    #process_input(output_dir, output_config)
+    #process_all_images(output_dir, output_config)
+    process_input(output_dir, output_config, eval_predictions=False)
     #stitch_warped_images(output_dir, grid_size=(7,8))
