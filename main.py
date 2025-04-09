@@ -99,92 +99,70 @@ def filter_intersections_by_distance(intersections, center):
     
     return filtered_intersections, square_side
 
-
-def has_piece2(image, square_vertices):
-    """ CLAUDE
-    Determine if a chess piece exists within the given square on the board.
+def has_piece(image, square_vertices) -> bool:
+    """
+    Detect if a chess piece (appearing as an incomplete ellipse) exists in the square.
     
     Args:
-        image: Grayscale image of the chess board
-        square_vertices: List of 4 (x,y) points that define the square to check
-    
+        image: Grayscale image of the chessboard
+        square_vertices: List of 4 points [(x1,y1), (x2,y2), (x3,y3), (x4,y4)] defining the square
+        
     Returns:
-        Boolean indicating whether a piece exists in the square
+        bool: True if a piece is detected, False otherwise
     """
-    # Convert vertices to numpy array for easier manipulation
-    vertices = np.array(square_vertices, dtype=np.int32)
-    
     # Create a mask for the square region
     mask = np.zeros(image.shape, dtype=np.uint8)
-    cv2.fillPoly(mask, [vertices], 255)
+    pts = np.array([square_vertices], dtype=np.int32)
+    cv2.fillPoly(mask, pts, 255)
     
-    # Apply mask to get only the square region
+    # Extract the square region using the mask
     square_region = cv2.bitwise_and(image, image, mask=mask)
     
-    # Get only the pixels that are part of the square (non-zero in mask)
-    square_pixels = square_region[mask > 0]
+    # Get bounding box of the square for cropping
+    x_coords = [p[0] for p in square_vertices]
+    y_coords = [p[1] for p in square_vertices]
+    x_min, x_max = max(0, min(x_coords)), min(image.shape[1], max(x_coords))
+    y_min, y_max = max(0, min(y_coords)), min(image.shape[0], max(y_coords))
     
-    if len(square_pixels) == 0:
+    # Crop to bounding box
+    cropped = square_region[y_min:y_max, x_min:x_max]
+    if cropped.size == 0:
         return False
     
-    # Calculate statistics for the square
-    mean_intensity = np.mean(square_pixels)
-    std_intensity = np.std(square_pixels)
+    # Apply thresholding to separate pieces from background
+    _, thresh = cv2.threshold(cropped, 120, 255, cv2.THRESH_BINARY_INV)
     
-    # Calculate histogram of the square region
-    hist = cv2.calcHist([square_pixels], [0], None, [256], [0, 256])
-    hist = hist.flatten() / len(square_pixels)  # Normalize histogram
+    # Apply morphological operations to clean up noise
+    kernel = np.ones((3, 3), np.uint8)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
     
-    # Calculate the peak-to-valley ratio (a measure of bimodality)
-    # High PVR suggests presence of both dark piece and light square (or vice versa)
-    peak_indices = np.where(hist > 0.02)[0]  # Find significant peaks
+    # Find contours in the thresholded image
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    if len(peak_indices) >= 2:
-        # Find the valley (minimum) between the highest two peaks
-        peak_pairs = []
-        for i in range(len(peak_indices)):
-            for j in range(i+1, len(peak_indices)):
-                if abs(peak_indices[i] - peak_indices[j]) > 30:  # Ensure peaks are sufficiently separated
-                    peak_pairs.append((peak_indices[i], peak_indices[j]))
+    if not contours:
+        return False
+    
+    # Calculate the area of the square
+    square_area = (x_max - x_min) * (y_max - y_min)
+    
+    # Check for sufficiently large contours that could be pieces
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        # A piece should occupy a significant portion of the square but not too much
+        area_ratio = area / square_area
         
-        if peak_pairs:
-            pvr = 0
-            for p1, p2 in peak_pairs:
-                min_idx = min(p1, p2)
-                max_idx = max(p1, p2)
-                valley = np.min(hist[min_idx:max_idx+1])
-                if valley > 0:
-                    peak_val = min(hist[p1], hist[p2])
-                    current_pvr = peak_val / valley
-                    pvr = max(pvr, current_pvr)
-            
-            # High std and PVR indicate presence of piece
-            if std_intensity > 40 and pvr > 2.0:
-                return True
-    
-    # Additional check: detect edges within the square region
-    # First create a copy of the masked region
-    square_img = np.zeros_like(image)
-    square_img[mask > 0] = square_pixels
-    
-    # Apply edge detection to the square
-    edges = cv2.Canny(square_img, 50, 150)
-    edge_pixels = np.count_nonzero(edges)
-    
-    # If there are significant edges and high standard deviation, likely a piece
-    if edge_pixels > 100 and std_intensity > 35:
-        return True
-    
-    # If high contrast within the square, likely a piece
-    if std_intensity > 50:
-        return True
+        if 0.05 < area_ratio < 0.8:
+            # Calculate circularity/roundness of the contour
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter > 0:
+                circularity = 4 * np.pi * area / (perimeter * perimeter)
+                
+                # Ellipses/circles have circularity closer to 1
+                # But incomplete ellipses will have lower values
+                if 0.2 < circularity < 0.9:
+                    return True
     
     return False
-
-def has_piece(image, square_vertices):
-    # check if there is half of an ellipse in the square
-    return True
-
     
 def process_image(image_path, output_dir: Optional[str] = None, output_config: Optional[dict] = None):
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
@@ -335,13 +313,10 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
 
     else:
         print(f"No lines detected in {image_path}")
-
-
-    # sort filtered_intersections by y coordinate and then by x coordinate
-    filtered_intersections.sort(key=lambda p: (p[1], p[0]))
+    filtered_intersections.sort(key=lambda p: (p[1], p[0]))    
+    board = [[0] * 8 for _ in range(8)]
     
-    board = [[0] * 8 for _ in range(8)]  # placeholder for board
-
+    pieces_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
     # Iterate over the squares and check for pieces
     for i in range(8):
         for j in range(8):
@@ -355,7 +330,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
 
             if has_piece(warped_img, square_corners):
                 board[i][j] = 1
-
+                cv2.rectangle(pieces_img, square_corners[0], square_corners[2], (0, 0, 255), 15)
 
     if output_dir is not None:
         base_filename = os.path.splitext(os.path.basename(image_path))[0]
@@ -375,6 +350,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
             ('hough_lines', lambda: hough_lines_img),
             ('hough_lines_rectified', lambda: hough_lines_rectified_img),
             ('filtered_intersections', lambda: filtered_intersections_img),
+            ('pieces', lambda: pieces_img),
         ]
         for output_type, get_image in output_handlers:
             if output_config.get(output_type, False):
@@ -568,7 +544,8 @@ if __name__ == "__main__":
         'dilated': False,
         'hough_lines': False,
         'hough_lines_rectified': False,
-        'filtered_intersections': True,
+        'filtered_intersections': False,
+        'pieces': True,
     }
 
     #process_all_images(output_dir, output_config)
