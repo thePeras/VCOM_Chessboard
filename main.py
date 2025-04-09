@@ -2,6 +2,7 @@ import numpy as np
 import cv2
 import os
 from typing import Optional
+import json
 
 from dataset_annotations import (
     evaluate_predictions,
@@ -9,9 +10,7 @@ from dataset_annotations import (
     get_annotations_by_image_name,
 )
 
-
-def process_image(image_path, output_dir: Optional[str] = None):
-    # Load Image
+def process_image(image_path, output_dir: Optional[str] = None, output_config: Optional[dict] = None):
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         print(f"Failed to load image: {image_path}")
@@ -19,7 +18,6 @@ def process_image(image_path, output_dir: Optional[str] = None):
 
     # Apply a Gaussian blur - To eliminate the noise in segmentation
     blur_img = cv2.GaussianBlur(img, (11, 11), 0)
-    canny = cv2.Canny(img, 150, 220)
 
     # Apply global binary threshold - Board segmentation
     ret, th_global = cv2.threshold(blur_img, 200, 255, cv2.THRESH_BINARY)
@@ -45,15 +43,11 @@ def process_image(image_path, output_dir: Optional[str] = None):
     if largest_contour is None:
         print(f"No valid contour found in {image_path}")
         return
-
-    contour_img = cv2.cvtColor(
-        img, cv2.COLOR_GRAY2BGR
-    )  # Convert grayscale to BGR for colored drawing
-    cv2.drawContours(
-        contour_img, [largest_contour], 0, (0, 0, 255), 3
-    )  # Draw the largest contour in red
-
-    # --- Improved Corner Detection ---
+    
+    contour_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)  
+    cv2.drawContours(contour_img, [largest_contour], 0, (0, 0, 255), 3)  # Draw the largest contour in red
+    
+    # --- Corner Detection ---
     # Approximate the contour to a polygon with four points
     perimeter = cv2.arcLength(largest_contour, True)
     epsilon = 0.01 * perimeter  # Initial approximation parameter (1% of perimeter)
@@ -112,16 +106,22 @@ def process_image(image_path, output_dir: Optional[str] = None):
         base_filename = os.path.splitext(os.path.basename(image_path))[0]
         image_folder = os.path.join(output_dir, base_filename)
         os.makedirs(image_folder, exist_ok=True)
-
-        cv2.imwrite(os.path.join(image_folder, f"{base_filename}_original.jpg"), img)
-        cv2.imwrite(os.path.join(image_folder, f"{base_filename}_corners.jpg"), points_img)
-        cv2.imwrite(os.path.join(image_folder, f"{base_filename}_contour.jpg"), contour_img)
-        cv2.imwrite(os.path.join(image_folder, f"{base_filename}_warped.jpg"), warped_img)
-        cv2.imwrite(os.path.join(image_folder, f"{base_filename}_threshold.jpg"), th_global)
-        cv2.imwrite(os.path.join(image_folder, f"{base_filename}_canny.jpg"), canny)
+        output_handlers = [
+            ('original', lambda: img),
+            ('corners', lambda: points_img),
+            ('contour', lambda: contour_img),
+            ('threshold', lambda: th_global),
+            ('warped', lambda: warped_img),
+            ('canny_edges', lambda: cv2.Canny(warped_img, 100, 200))
+        ]
+        for output_type, get_image in output_handlers:
+            if output_config.get(output_type, False):
+                image = get_image()
+                cv2.imwrite(os.path.join(image_folder, f'{base_filename}_{output_type}.jpg'), image)
 
     board = [[0] * 8 for _ in range(8)]  # placeholder for board
     predictions = {
+        "image": image_path,
         "corners": {
             "bottom_left": bottom_left,
             "bottom_right": bottom_right,
@@ -137,38 +137,104 @@ def process_image(image_path, output_dir: Optional[str] = None):
     print(f"Processed {base_filename}")
     return predictions
 
+# Position of the pieces on the board (8x8 matrix with 0/1 values)
+def get_board(image_path):
+    # TODO
+    return []
 
-# Create output directory if it doesn’t exist
-output_dir = "output_images"
-os.makedirs(output_dir, exist_ok=True)
+# Position of the pieces on the image (bounding boxes)
+def get_detected_pieces(image_path):
+    # TODO
+    return []
 
-dataset = get_dataset()
+# Total number of black/white pieces on the board
+def get_number_of_pieces(image_path):
+    # TODO
+    # This method is just an intersection of the board with the detected pieces bounding boxes
+    return 0
 
-# Process all images in the images directory
-images_dir = os.path.join("data", "images")
+def process_all_images(output_dir, output_config, evaluate_predictions: bool = True):
+    images_dir = './data/images'
+    output = []
+    for filename in os.listdir(images_dir):
+        if filename.endswith(('.jpg', '.jpeg', '.png')):
+            image_path = os.path.join(images_dir, filename)
+            output.append({
+                "image": image_path,
+                "num_pieces": get_number_of_pieces(image_path),
+                "board": get_board(image_path),
+                "detected_pieces": get_detected_pieces(image_path),
+            })
 
-EVALUATE = True
-if EVALUATE:
-    dataset = get_dataset()
+            image_output_dict = process_image(image_path, output_dir, output_config)
+            if evaluate_predictions:
+                image_annotations = get_annotations_by_image_name(filename, dataset)
+                evaluations = evaluate_predictions(
+                    image_annotations,
+                    image_output_dict,
+                    eval_board=False,
+                    eval_num_pieces=False,
+                    verbose=True,
+                )
+                print(evaluations)
+
+    with open('output.json', 'w') as f:
+        json.dump(output, f, indent=4)
+    
+    print("Output JSON file created.")
+    print(f"All images processed. Results saved to {output_dir}")
+
+def process_input(output_dir, output_config):
+    if not os.path.exists('input.json'):
+        print("input.json file not found.")
+        exit(1)
+
+    with open('input.json', 'r') as f:
+        data = json.load(f)
+
+    output = []
+    for image in data['image_files']:
+        image_path = os.path.join("data/", image) # TODO: Delete data/ on submission
+        output.append({
+            "image": image_path,
+            "num_pieces": get_number_of_pieces(image_path),
+            "board": get_board(image_path),
+            "detected_pieces": get_detected_pieces(image_path),
+        })
+        process_image(image_path, output_dir, output_config)
+    
+    with open('output.json', 'w') as f:
+        json.dump(output, f, indent=4)
+    
+    print("Output JSON file created.")
 
 
-for filename in os.listdir(images_dir):
-    if filename.endswith((".jpg", ".jpeg", ".png")):
-        image_path = os.path.join(images_dir, filename)
-        output_json = process_image(image_path, output_dir)
-        if EVALUATE:
-            image_annotations = get_annotations_by_image_name(filename, dataset)
-            evaluations = evaluate_predictions(
-                image_annotations,
-                output_json,
-                eval_board=False,
-                eval_num_pieces=False,
-                verbose=True,
-            )
-            print(evaluations)
+if __name__ == "__main__":
+    # --- Delete output directory if it exists ---
+    output_dir = 'output_images'
+    if os.path.exists(output_dir):
+        print(f"Deleting existing output directory: {output_dir}")
+        import shutil
+        try:
+            shutil.rmtree(output_dir)
+            print(f"Successfully deleted output directory: {output_dir}")
+        except Exception as e:
+            print(f"Error deleting output directory: {e}")
+    
+    print(f"Creating output directory: {output_dir}")
+    os.makedirs(output_dir, exist_ok=True)
 
-# Uncomment the following line to process a single image
-# image_path = PATH_TO_IMAGE
-# process_image(image_path, output_dir)
+    # --- Configure output options ---
+    output_config = {
+        'original': True,
+        'corners': False,
+        'contour': False,
+        'threshold': False,
+        'warped': True,
+        'canny_edges': True,
+        'merged_lines': True
+    }
 
-print(f"All images processed. Results saved to {output_dir}")
+    process_all_images(output_dir, output_config)
+    #process_input(output_dir, output_config)
+
