@@ -3,6 +3,7 @@ import cv2
 import os
 from typing import Optional
 import json
+import math
 
 from dataset_annotations import (
     evaluate_predictions,
@@ -174,6 +175,8 @@ def process_all_images(output_dir, output_config, eval_predictions: bool = True)
     
     print("Output JSON file created.")
     print(f"All images processed. Results saved to {output_dir}")
+    
+    stitch_warped_images(output_dir, grid_size=(7,8))
 
 def process_input(output_dir, output_config, eval_predictions: bool = True):
     if not os.path.exists('input.json'):
@@ -212,6 +215,73 @@ def process_input(output_dir, output_config, eval_predictions: bool = True):
         json.dump(output, f, indent=4)
     
     print("Output JSON file created.")
+    
+    stitch_warped_images(output_dir)
+
+
+def stitch_warped_images(output_dir, grid_size=None, output_filename="stitched_warped_images.jpg"):
+    warped_images = []
+    for root, dirs, files in os.walk(output_dir):
+        for file in files:
+            if file.endswith('_warped.jpg'):
+                warped_images.append(os.path.join(root, file))
+    
+    if not warped_images:
+        print("No warped images found.")
+        return None
+    
+    warped_images.sort()
+    
+    images = []
+    max_height, max_width = 0, 0
+    
+    for img_path in warped_images:
+        img = cv2.imread(img_path)
+        if img is None:
+            print(f"Warning: Could not load image {img_path}")
+            continue
+        
+        images.append(img)
+        h, w = img.shape[:2]
+        max_height = max(max_height, h)
+        max_width = max(max_width, w)
+    
+    if not images:
+        print("No images could be loaded.")
+        return None
+    
+    if grid_size is None:
+        total_images = len(images)
+        grid_cols = math.ceil(math.sqrt(total_images))
+        grid_rows = math.ceil(total_images / grid_cols)
+        grid_size = (grid_rows, grid_cols)
+    else:
+        grid_rows, grid_cols = grid_size
+    
+    canvas_height = grid_rows * max_height
+    canvas_width = grid_cols * max_width
+    canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
+    
+    for idx, img in enumerate(images):
+        if idx >= grid_rows * grid_cols:
+            print(f"Warning: Grid size {grid_size} is too small for {len(images)} images. Some images will be omitted.")
+            break
+        
+        row = idx // grid_cols
+        col = idx % grid_cols
+        
+        resized_img = cv2.resize(img, (max_width, max_height))
+        
+        y_offset = row * max_height
+        x_offset = col * max_width
+        
+        canvas[y_offset:y_offset + max_height, x_offset:x_offset + max_width] = resized_img
+    
+    output_path = os.path.join(output_dir, output_filename)
+    cv2.imwrite(output_path, canvas)
+    
+    print(f"Stitched {len(images)} images into grid {grid_size} at {output_path}")
+    return output_path
 
 
 if __name__ == "__main__":
@@ -231,15 +301,14 @@ if __name__ == "__main__":
 
     # --- Configure output options ---
     output_config = {
-        'original': True,
+        'original': False,
         'corners': False,
         'contour': False,
         'threshold': False,
         'warped': True,
-        'canny_edges': True,
-        'merged_lines': True
+        'canny_edges': False,
+        'merged_lines': False
     }
 
     process_all_images(output_dir, output_config)
     #process_input(output_dir, output_config)
-
