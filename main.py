@@ -61,7 +61,46 @@ def compute_intersections(verticals, horizontals):
             intersections.append((x, y))
     return intersections
 
+def filter_intersections_by_distance(intersections, center):
+    """
+    Choose the 81 intersections that are closest to the center of the board,
+    ensuring each point is at least 250 pixels away from any other selected point.
+    """
+    x_center, y_center = center
+    distances = []
+    for point in intersections:
+        x, y = point
+        distance = math.sqrt((x - x_center) ** 2 + (y - y_center) ** 2)
+        distances.append((distance, point))
 
+    distances.sort(key=lambda x: x[0])
+    
+    filtered_intersections = [distances[0][1]]
+    
+    for _, point in distances[1:]:
+        valid_point = True
+        for selected_point in filtered_intersections:
+            x1, y1 = point
+            x2, y2 = selected_point
+            distance = math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+            if distance < 250:
+                valid_point = False
+                break
+        
+        if valid_point:
+            filtered_intersections.append(point)
+            
+        if len(filtered_intersections) == 81:
+            break
+    
+    square_side = int(math.sqrt(len(filtered_intersections)))
+    
+    if len(filtered_intersections) < 81:
+        print(f"Warning: Only found {len(filtered_intersections)} valid intersections with minimum distance of 250 pixels")
+    
+    return filtered_intersections, square_side
+
+    
 def process_image(image_path, output_dir: Optional[str] = None, output_config: Optional[dict] = None):
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -189,6 +228,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
             lines, img.shape, angle_threshold=10, distance_threshold=20
         )
         hough_lines_rectified_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
+        filtered_intersections_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
         
         # vertical lines
         for x, y0, x2, y2 in rectified_verticals:
@@ -201,9 +241,15 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
         intersections = compute_intersections(verticals, horizontals)
         for point in intersections:
             cv2.circle(hough_lines_rectified_img, point, 25, (0, 0, 255), -1)
+        
+        x_center, y_center = warped_img.shape[1] // 2, warped_img.shape[0] // 2
+
+        filtered_intersections, square_side = filter_intersections_by_distance(intersections, (x_center, y_center))
+        for point in filtered_intersections:
+            cv2.circle(filtered_intersections_img, point, 25, (0, 255, 0), -1)
+
     else:
         print(f"No lines detected in {image_path}")
-
 
     if output_dir is not None:
         base_filename = os.path.splitext(os.path.basename(image_path))[0]
@@ -222,6 +268,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
             ('dilated', lambda: dilated),
             ('hough_lines', lambda: hough_lines_img),
             ('hough_lines_rectified', lambda: hough_lines_rectified_img),
+            ('filtered_intersections', lambda: filtered_intersections_img),
         ]
         for output_type, get_image in output_handlers:
             if output_config.get(output_type, False):
@@ -414,8 +461,9 @@ if __name__ == "__main__":
         'blurred_warped': False,
         'canny_edges': False,
         'dilated': False,
-        'hough_lines': True,
+        'hough_lines': False,
         'hough_lines_rectified': True,
+        'filtered_intersections': True,
     }
 
     process_all_images(output_dir, output_config)
