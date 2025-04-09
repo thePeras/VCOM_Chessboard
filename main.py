@@ -11,6 +11,57 @@ from dataset_annotations import (
     get_annotations_by_image_name,
 )
 
+def filter_and_rectify_hough_lines(lines, image_shape, angle_threshold=10, distance_threshold=20):
+
+    vertical_candidates = []
+    horizontal_candidates = []
+    
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        theta = abs(math.degrees(math.atan2(y2 - y1, x2 - x1)))
+        theta = theta % 180
+        
+        if theta < angle_threshold or theta > (180 - angle_threshold):
+            y_mean = (y1 + y2) // 2
+            horizontal_candidates.append(y_mean)
+        elif abs(theta - 90) < angle_threshold:
+            x_mean = (x1 + x2) // 2
+            vertical_candidates.append(x_mean)
+
+    # Cluster similar horizontal lines by their y coordinate
+    horizontals = []
+    horizontal_candidates.sort()
+    for y in horizontal_candidates:
+        if not horizontals or abs(y - horizontals[-1]) > distance_threshold:
+            horizontals.append(y)
+        else:
+            horizontals[-1] = (horizontals[-1] + y) // 2
+
+    # Cluster similar vertical lines by their x coordinate
+    verticals = []
+    vertical_candidates.sort()
+    for x in vertical_candidates:
+        if not verticals or abs(x - verticals[-1]) > distance_threshold:
+            verticals.append(x)
+        else:
+            verticals[-1] = (verticals[-1] + x) // 2
+
+    # Rectify lines: vertical lines become (x, 0) -> (x, height) and horizontal lines become (0, y) -> (width, y)
+    height, width = image_shape[:2]
+    rectified_verticals = [(x, 0, x, height) for x in verticals]
+    rectified_horizontals = [(0, y, width, y) for y in horizontals]
+
+    return rectified_verticals, rectified_horizontals, verticals, horizontals
+
+
+def compute_intersections(verticals, horizontals):
+    intersections = []
+    for x in verticals:
+        for y in horizontals:
+            intersections.append((x, y))
+    return intersections
+
+
 def process_image(image_path, output_dir: Optional[str] = None, output_config: Optional[dict] = None):
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -118,9 +169,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     kernel = np.ones((5, 5), np.uint8)
     dilated = cv2.dilate(canny, kernel, iterations=1)
     
-    # Dynamic Hough Line Transform
-    # cv2.HoughLinesP(dilated, 1, np.pi/180, 60, minLineLength=40, maxLineGap=70)
-
+    # Hough Line Transform
     lines = cv2.HoughLinesP(
         dilated, 1, np.pi / 180, 500, minLineLength=1700, maxLineGap=400
     )
@@ -135,9 +184,28 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
         print(f"No lines detected in {image_path}")
         return
 
-    # OUTPUT
+    if lines is not None:
+        rectified_verticals, rectified_horizontals, verticals, horizontals = filter_and_rectify_hough_lines(
+            lines, img.shape, angle_threshold=10, distance_threshold=20
+        )
+        hough_lines_rectified_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
+        
+        # vertical lines
+        for x, y0, x2, y2 in rectified_verticals:
+            cv2.line(hough_lines_rectified_img, (x, y0), (x2, y2), (255, 200, 0), 10)
+            
+        # horizontal lines
+        for x0, y, x2, y2 in rectified_horizontals:
+            cv2.line(hough_lines_rectified_img, (x0, y), (x2, y2), (255, 200, 0), 10)
+        
+        intersections = compute_intersections(verticals, horizontals)
+        for point in intersections:
+            cv2.circle(hough_lines_rectified_img, point, 25, (0, 0, 255), -1)
+    else:
+        print(f"No lines detected in {image_path}")
+
+
     if output_dir is not None:
-        # Save images
         base_filename = os.path.splitext(os.path.basename(image_path))[0]
         image_folder = os.path.join(output_dir, base_filename)
         os.makedirs(image_folder, exist_ok=True)
@@ -153,6 +221,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
             ('canny_edges', lambda: canny),
             ('dilated', lambda: dilated),
             ('hough_lines', lambda: hough_lines_img),
+            ('hough_lines_rectified', lambda: hough_lines_rectified_img),
         ]
         for output_type, get_image in output_handlers:
             if output_config.get(output_type, False):
@@ -340,12 +409,13 @@ if __name__ == "__main__":
         'corners': False,
         'contour': False,
         'threshold': False,
-        'warped': False,
+        'warped': True,
         'clahe': False,
         'blurred_warped': False,
-        'canny_edges': True,
-        'dilated': True,
+        'canny_edges': False,
+        'dilated': False,
         'hough_lines': True,
+        'hough_lines_rectified': True,
     }
 
     process_all_images(output_dir, output_config)
