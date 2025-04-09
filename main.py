@@ -119,6 +119,21 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     dilated = cv2.dilate(canny, kernel, iterations=1)
     
     # Dynamic Hough Line Transform
+    # cv2.HoughLinesP(dilated, 1, np.pi/180, 60, minLineLength=40, maxLineGap=70)
+
+    lines = cv2.HoughLinesP(
+        dilated, 1, np.pi / 180, 500, minLineLength=1700, maxLineGap=400
+    )
+
+    # Draw lines on the original image
+    hough_lines_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            cv2.line(hough_lines_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    else:
+        print(f"No lines detected in {image_path}")
+        return
 
     # OUTPUT
     if output_dir is not None:
@@ -137,6 +152,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
             ('blurred_warped', lambda: blurred_warped),
             ('canny_edges', lambda: canny),
             ('dilated', lambda: dilated),
+            ('hough_lines', lambda: hough_lines_img),
         ]
         for output_type, get_image in output_handlers:
             if output_config.get(output_type, False):
@@ -329,6 +345,7 @@ if __name__ == "__main__":
         'blurred_warped': False,
         'canny_edges': True,
         'dilated': True,
+        'hough_lines': True,
     }
 
     process_all_images(output_dir, output_config)
