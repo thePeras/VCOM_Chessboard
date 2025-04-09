@@ -100,16 +100,6 @@ def filter_intersections_by_distance(intersections, center):
     return filtered_intersections, square_side
 
 def has_piece(image, square_vertices) -> bool:
-    """
-    Detect if a chess piece (appearing as an incomplete ellipse) exists in the square.
-    
-    Args:
-        image: Grayscale image of the chessboard
-        square_vertices: List of 4 points [(x1,y1), (x2,y2), (x3,y3), (x4,y4)] defining the square
-        
-    Returns:
-        bool: True if a piece is detected, False otherwise
-    """
     # Create a mask for the square region
     mask = np.zeros(image.shape, dtype=np.uint8)
     pts = np.array([square_vertices], dtype=np.int32)
@@ -313,24 +303,35 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
 
     else:
         print(f"No lines detected in {image_path}")
-    filtered_intersections.sort(key=lambda p: (p[1], p[0]))    
-    board = [[0] * 8 for _ in range(8)]
-    
-    pieces_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
-    # Iterate over the squares and check for pieces
-    for i in range(8):
-        for j in range(8):
-            # Get coordinates for all 4 corners of the square
-            square_corners = [
-                filtered_intersections[i * 9 + j],
-                filtered_intersections[i * 9 + j + 1],
-                filtered_intersections[(i + 1) * 9 + j + 1],
-                filtered_intersections[(i + 1) * 9 + j],
-            ]
 
-            if has_piece(warped_img, square_corners):
-                board[i][j] = 1
-                cv2.rectangle(pieces_img, square_corners[0], square_corners[2], (0, 0, 255), 15)
+    filtered_intersections.sort(key=lambda p: (p[1], p[0]))
+    
+    if len(filtered_intersections) >= 81:
+        rows = cols = 8
+        step = 9
+    else:
+        grid_side = int(math.sqrt(len(filtered_intersections))) - 1
+        rows = cols = grid_side if grid_side > 0 else 0
+        step = grid_side + 1
+        print(f"Using a {rows}x{cols} grid with {len(filtered_intersections)} intersections")
+    
+    board = [[0] * cols for _ in range(rows)] if rows > 0 and cols > 0 else [[0]]
+
+    pieces_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
+    
+    for i in range(rows):
+        for j in range(cols):
+            if (i+1) * step + j + 1 < len(filtered_intersections):
+                square_corners = [
+                    filtered_intersections[i * step + j],
+                    filtered_intersections[i * step + j + 1],
+                    filtered_intersections[(i + 1) * step + j + 1],
+                    filtered_intersections[(i + 1) * step + j],
+                ]
+
+                if has_piece(warped_img, square_corners):
+                    board[i][j] = 1
+                    cv2.polylines(pieces_img, [np.array(square_corners)], True, (0, 0, 255), 10)
 
     if output_dir is not None:
         base_filename = os.path.splitext(os.path.basename(image_path))[0]
@@ -533,21 +534,21 @@ if __name__ == "__main__":
 
     # --- Configure output options ---
     output_config = {
-        'original': False,
-        'corners': False,
-        'contour': False,
-        'threshold': False,
+        'original': True,
+        'corners': True,
+        'contour': True,
+        'threshold': True,
         'warped': True,
-        'clahe': False,
-        'blurred_warped': False,
-        'canny_edges': False,
-        'dilated': False,
-        'hough_lines': False,
-        'hough_lines_rectified': False,
-        'filtered_intersections': False,
+        'clahe': True,
+        'blurred_warped': True,
+        'canny_edges': True,
+        'dilated': True,
+        'hough_lines': True,
+        'hough_lines_rectified': True,
+        'filtered_intersections': True,
         'pieces': True,
     }
 
-    #process_all_images(output_dir, output_config)
+    #process_all_images(output_dir, output_config, eval_predictions=False)
     process_input(output_dir, output_config, eval_predictions=False)
     #stitch_warped_images(output_dir, grid_size=(7,8))
