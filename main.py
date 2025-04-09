@@ -18,7 +18,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
         return
 
     # Apply a Gaussian blur - To eliminate the noise in segmentation
-    blur_img = cv2.GaussianBlur(img, (11, 11), 0)
+    blur_img = cv2.GaussianBlur(img, (5, 5), 0)
     canny = cv2.Canny(img, 150, 220)
 
     # Apply global binary threshold - Board segmentation
@@ -103,6 +103,24 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     # Apply the warp matrix to the image
     warped_img = cv2.warpPerspective(img, warp_matrix, (img.shape[1], img.shape[0]))
 
+
+    # CLAHE
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    clahe_img = clahe.apply(warped_img)
+
+    # Gaussian Blur
+    blurred_warped = cv2.GaussianBlur(clahe_img, (7, 7), 0)
+
+    # Canny Edge Detection
+    canny = cv2.Canny(blurred_warped, 50, 150)
+
+    # Dilation
+    kernel = np.ones((5, 5), np.uint8)
+    dilated = cv2.dilate(canny, kernel, iterations=1)
+    
+    # Dynamic Hough Line Transform
+
+    # OUTPUT
     if output_dir is not None:
         # Save images
         base_filename = os.path.splitext(os.path.basename(image_path))[0]
@@ -115,7 +133,10 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
             ('contour', lambda: contour_img),
             ('threshold', lambda: th_global),
             ('warped', lambda: warped_img),
-            ('canny_edges', lambda: canny)
+            ('clahe', lambda: clahe_img),
+            ('blurred_warped', lambda: blurred_warped),
+            ('canny_edges', lambda: canny),
+            ('dilated', lambda: dilated),
         ]
         for output_type, get_image in output_handlers:
             if output_config.get(output_type, False):
@@ -176,7 +197,7 @@ def process_all_images(output_dir, output_config, eval_predictions: bool = True)
     print("Output JSON file created.")
     print(f"All images processed. Results saved to {output_dir}")
     
-    stitch_warped_images(output_dir, grid_size=(7,8))
+
 
 def process_input(output_dir, output_config, eval_predictions: bool = True):
     if not os.path.exists('input.json'):
@@ -215,11 +236,9 @@ def process_input(output_dir, output_config, eval_predictions: bool = True):
         json.dump(output, f, indent=4)
     
     print("Output JSON file created.")
-    
-    stitch_warped_images(output_dir)
 
 
-def stitch_warped_images(output_dir, grid_size=None, output_filename="stitched_warped_images.jpg"):
+def stitch_warped_images(output_dir, grid_size=None, output_filename="../stitched_warped_images.jpg"):
     warped_images = []
     for root, dirs, files in os.walk(output_dir):
         for file in files:
@@ -305,10 +324,13 @@ if __name__ == "__main__":
         'corners': False,
         'contour': False,
         'threshold': False,
-        'warped': True,
-        'canny_edges': False,
-        'merged_lines': False
+        'warped': False,
+        'clahe': False,
+        'blurred_warped': False,
+        'canny_edges': True,
+        'dilated': True,
     }
 
     process_all_images(output_dir, output_config)
     #process_input(output_dir, output_config)
+    #stitch_warped_images(output_dir, grid_size=(7,8))
