@@ -194,7 +194,7 @@ def evaluate_corners(true_corners, pred_corners, verbose: bool = False):
         min_corners_mse = min(min_corners_mse, corners_mse)
         if verbose:
             print(
-                f"Corners MSE: {corners_mse}, orientation: {i}"
+                f"Corners MSE: {corners_mse:.0f}, orientation: {i}"
             )
     return min_corners_mse
 
@@ -247,7 +247,7 @@ def evaluate_predictions(
         # corners_mse = corners_mse / len(corner_names)
         # corners_mse = corners_mse**0.5
         if verbose:
-            print(f"Corners MSE: {corners_mse}")
+            print(f"Corners MSE: {corners_mse:.2f}")
 
     return {
         "num_pieces": num_pieces_diff,

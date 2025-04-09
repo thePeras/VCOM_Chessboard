@@ -4,6 +4,7 @@ import os
 from typing import Optional
 import json
 import pandas as pd
+from shapely.geometry import Polygon
 
 from dataset_annotations import (
     evaluate_predictions,
@@ -12,21 +13,53 @@ from dataset_annotations import (
 )
 
 def process_image(image_path, output_dir: Optional[str] = None, output_config: Optional[dict] = None):
+    THRESHOLD_MAXVAL = 255
+    THRESHOLD_THRESH = 200
+    CANNY_LOWER = 100
+    CANNY_UPPER = 250
+    MAX_DISTANCE_TO_MERGE_CONTOURS = 5
+    MIN_DISTANCE_TO_IMAGE_BORDER = 10
+
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         print(f"Failed to load image: {image_path}")
         return
 
+ 
     # Apply a Gaussian blur - To eliminate the noise in segmentation
     blur_img = cv2.GaussianBlur(img, (11, 11), 0)
 
     # Apply global binary threshold - Board segmentation
-    ret, th_global = cv2.threshold(blur_img, 200, 255, cv2.THRESH_BINARY)
+    ret, th_global = cv2.threshold(blur_img, THRESHOLD_THRESH, THRESHOLD_MAXVAL, cv2.THRESH_BINARY)
 
-    # Get the contours of the board
+    # # Get the contours of the board
+    # contours, hierarchy = cv2.findContours(
+    #     th_global, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+    # )
+    # if not contours:
+    #     print(f"No contours found in {image_path}")
+    #     return
+    
+    # can use original img or th_global for canny
+    canny = cv2.Canny(img, CANNY_LOWER, CANNY_UPPER, apertureSize=3, L2gradient=True)
     contours, hierarchy = cv2.findContours(
-        th_global, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+        canny, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
     )
+
+    img_height, img_width = img.shape[:2]
+    filtered_contours = []
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        
+        if (
+            x > MIN_DISTANCE_TO_IMAGE_BORDER and
+            y > MIN_DISTANCE_TO_IMAGE_BORDER and
+            x + w < img_width - MIN_DISTANCE_TO_IMAGE_BORDER and
+            y + h < img_height - MIN_DISTANCE_TO_IMAGE_BORDER
+        ):
+            filtered_contours.append(cnt)
+
+    contours = filtered_contours
     if not contours:
         print(f"No contours found in {image_path}")
         return
@@ -34,20 +67,64 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     # Get the largest contour
     largest_area = 0
     largest_contour = None
+    largest_contour_without_ch = None
     for cnt in contours:
         contour_ch = cv2.convexHull(cnt)
         area = cv2.contourArea(contour_ch)
         if area > largest_area:
             largest_area = area
+            largest_contour_without_ch = cnt
             largest_contour = contour_ch
+
+    basic_contour_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    cv2.drawContours(basic_contour_img, [largest_contour], 0, (0, 0, 255), 3)
+
+    # merge contours with largest contour if distance to the main convex hull is small
+    # go until no more contours can be merged
+    changed = True
+    contours_to_merge = []
+    while changed:
+        changed = False
+        ncontours = []
+        for cnt in contours:
+            if cnt is largest_contour_without_ch:
+                continue
+            if len(cnt) < 3:    # not a polygon
+                continue
+
+            # contours are (n, 1, 2), take just the 2D points
+            poly1 = Polygon(largest_contour[:, 0, :])
+            poly2 = Polygon(cnt[:, 0, :])
+
+            min_distance = poly1.distance(poly2)
+            if min_distance <= MAX_DISTANCE_TO_MERGE_CONTOURS:
+                changed = True
+                largest_contour = cv2.convexHull(np.vstack([largest_contour, cnt]))
+                contours_to_merge.append(cnt)
+            else:
+                ncontours.append(cnt)
+        contours = ncontours
+
+    if contours_to_merge:
+        all_points = np.vstack([largest_contour] + contours_to_merge)
+        largest_contour = cv2.convexHull(all_points)
 
     if largest_contour is None:
         print(f"No valid contour found in {image_path}")
         return
-    
-    contour_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)  
-    cv2.drawContours(contour_img, [largest_contour], 0, (0, 0, 255), 3)  # Draw the largest contour in red
-    
+
+    # Draw the largest contour: in red
+    contour_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    cv2.drawContours(contour_img, [largest_contour], 0, (0, 0, 255), 3)
+
+    # Draw the largest contour (by convex hull) without considering the convex hull: in blue
+    contour_no_ch_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    cv2.drawContours(contour_no_ch_img, [largest_contour_without_ch], 0, (255, 0, 0), 5)
+
+    # Draw the merged contours
+    cv2.drawContours(contour_no_ch_img, contours_to_merge, -1, (0, 255, 0), 3)
+
+
     # --- Corner Detection ---
     # Approximate the contour to a polygon with four points
     perimeter = cv2.arcLength(largest_contour, True)
@@ -83,7 +160,8 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     # Draw the points on a copy of the original image
     points_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     for pt in [top_left, top_right, bottom_left, bottom_right]:
-        cv2.circle(points_img, tuple(map(int, pt)), 15, (0, 0, 255), -1)
+        cv2.circle(points_img, tuple(map(int, pt)), 25, (0, 0, 255), -1)
+    cv2.drawContours(points_img, [largest_contour], 0, (0, 255, 0), 3)
 
     # Define comparison points (destination corners)
     top_left_comp = (0, 0)
@@ -111,12 +189,15 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
             ('original', lambda: img),
             ('corners', lambda: points_img),
             ('contour', lambda: contour_img),
+            ('basic_contour', lambda: basic_contour_img),
             ('threshold', lambda: th_global),
             ('warped', lambda: warped_img),
-            ('canny_edges', lambda: cv2.Canny(warped_img, 100, 200))
+            ('canny_edges', lambda: cv2.Canny(warped_img, 100, 200)),
+            ('initial_canny_edges', lambda: canny),
+            ('contours_no_ch', lambda: contour_no_ch_img),
         ]
         for output_type, get_image in output_handlers:
-            if output_config.get(output_type, False):
+            if output_config.get(output_type, True):
                 image = get_image()
                 cv2.imwrite(os.path.join(image_folder, f'{base_filename}_{output_type}.jpg'), image)
 
@@ -183,12 +264,23 @@ def process_all_images(output_dir, output_config, eval_predictions: bool = True)
                     verbose=True,
                 )
                 image_evaluations.append({"image_path": image_path, **evaluations})
-                print(evaluations)
 
     if eval_predictions:
-        too_much_corner_error = 60000
+        TOO_LARGE_CORNER_ERROR = 50000
+        TOO_SMALL_CORNER_ERROR = 20000
         evaluations = pd.DataFrame(image_evaluations)
-        bad_corners = evaluations[evaluations["corners"] >= too_much_corner_error]
+        evaluations["clickable_image_path"] = evaluations["image_path"].apply(
+            lambda x: os.path.splitext(os.path.basename(x))[0]
+        )
+        bad_corners = evaluations[(evaluations["corners"] >= TOO_LARGE_CORNER_ERROR) | (evaluations["corners"] <= TOO_SMALL_CORNER_ERROR)]
+        bad_corners = evaluations
+        bad_corners = bad_corners.sort_values(by="corners", ascending=False)
+        for image_path in bad_corners["clickable_image_path"]:
+            cv2.imshow(image_path, cv2.resize(cv2.imread(f"output_images/{image_path}/{image_path}_corners.jpg"), (800, 800)))
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+
+        print(f"Possible bad corners count: {len(bad_corners)} (not all are actually wrong, since our corners are defined to be outside the board")
         print(bad_corners)
 
     with open('output.json', 'w') as f:
@@ -245,7 +337,7 @@ if __name__ == "__main__":
         'threshold': True,
         'warped': True,
         'canny_edges': True,
-        'merged_lines': True
+        'merged_lines': True,
     }
 
     process_all_images(output_dir, output_config)
