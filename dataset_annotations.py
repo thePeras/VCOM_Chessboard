@@ -40,8 +40,21 @@ def get_piece_position(piece: str):
     col = ord(piece[1]) - ord("1")
     return row, col
 
+def get_corner_annotations(dataset):
+    """
+    Get the corner annotations.
+    """
+    corner_annotations = dataset["annotations"]["corners"]
+    return corner_annotations
 
-def get_image_id_by_name(image_name):
+def get_piece_annotations(dataset):
+    """
+    Get the piece annotations.
+    """
+    piece_annotations = dataset["annotations"]["pieces"]
+    return piece_annotations
+
+def get_image_id_by_name(image_name, dataset):
     """
     Get image id by image name.
     """
@@ -50,12 +63,14 @@ def get_image_id_by_name(image_name):
             return image["id"]
     return None
 
-
-def get_annotations_by_image_name(image_name, corner_annotations, piece_annotations):
+def get_annotations_by_image_name(image_name, dataset):
     """
     Get annotations by image name.
     """
-    image_id = get_image_id_by_name(image_name)
+    corner_annotations = get_corner_annotations(dataset)
+    piece_annotations = get_piece_annotations(dataset)
+
+    image_id = get_image_id_by_name(image_name, dataset)
     ans = {}
     ans["board"] = [[0] * 8 for _ in range(8)]
     ans["detected_pieces"] = []
@@ -140,10 +155,8 @@ def from_annotation_to_output_json(image_name, annotation):
     return ans
 
 
-def draw_annotations(image_name, image_path, corner_annotations, piece_annotations):
-    image_annotations = get_annotations_by_image_name(
-        image_name, corner_annotations, piece_annotations
-    )
+def draw_annotations(image_name, image_path, dataset):
+    image_annotations = get_annotations_by_image_name(image_name, dataset)
 
     image = cv2.imread(image_path)
     image = draw_bboxes(image, image_annotations, [])
@@ -169,6 +182,9 @@ def evaluate_predictions(
     pred_num_pieces = sum([sum(row) for row in pred_board])
     # pred_bboxs = predictions["detected_pieces"]   # don't need this for now
 
+    num_pieces_diff = 0
+    board_diff = 0
+    corners_mse = 0
     if eval_num_pieces:
         # Eval number of pieces
         num_pieces_diff = abs(true_num_pieces - pred_num_pieces)
@@ -201,10 +217,14 @@ def evaluate_predictions(
         if verbose:
             print(f"Corners MSE: {corners_mse}")
 
-    return num_pieces_diff, board_diff, corners_mse
+    return {
+        "num_pieces": num_pieces_diff,
+        "board": board_diff,
+        "corners": corners_mse,
+    }
 
 
-def run_all(corner_annotations, piece_annotations):
+def run_all(dataset):
     image_list = list(sorted(os.listdir(os.path.join("data", "images"))))
 
     image_paths = {
@@ -214,7 +234,7 @@ def run_all(corner_annotations, piece_annotations):
     }
     # don't need this for now
     # image_annotations = {
-    #     image_name: get_annotations_by_image_name(image_name, corner_annotations, piece_annotations)
+    #     image_name: get_annotations_by_image_name(image_name, dataset)
     #     for image_name in image_list
     # }
 
@@ -225,17 +245,19 @@ def run_all(corner_annotations, piece_annotations):
         # image_annotation_info = image_annotations[image_name]
 
         output_path = os.path.join(output_dir, image_name)
-        result_image = draw_annotations(
-            image_name, image_path, corner_annotations, piece_annotations
-        )
+        result_image = draw_annotations(image_name, image_path, dataset)
         cv2.imwrite(output_path, result_image)
         print(f"Saved {output_path}")
 
-
-if __name__ == "__main__":
+def get_dataset():
+    """
+    Get the dataset.
+    """
     with open("complete_dataset/annotations.json", "r") as f:
         dataset = json.load(f)
+    return dataset
 
-    corner_annotations = dataset["annotations"]["corners"]
-    piece_annotations = dataset["annotations"]["pieces"]
-    run_all(corner_annotations, piece_annotations)
+
+if __name__ == "__main__":
+    dataset = get_dataset()
+    run_all(dataset)

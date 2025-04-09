@@ -1,26 +1,37 @@
 import numpy as np
 import cv2
 import os
+from typing import Optional
 
-def process_image(image_path, output_dir):
+from dataset_annotations import (
+    evaluate_predictions,
+    get_dataset,
+    get_annotations_by_image_name,
+)
+
+
+def process_image(image_path, output_dir: Optional[str] = None):
     # Load Image
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         print(f"Failed to load image: {image_path}")
         return
-    
+
     # Apply a Gaussian blur - To eliminate the noise in segmentation
     blur_img = cv2.GaussianBlur(img, (11, 11), 0)
-    
+    canny = cv2.Canny(img, 150, 220)
+
     # Apply global binary threshold - Board segmentation
     ret, th_global = cv2.threshold(blur_img, 200, 255, cv2.THRESH_BINARY)
-    
+
     # Get the contours of the board
-    contours, hierarchy = cv2.findContours(th_global, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    contours, hierarchy = cv2.findContours(
+        th_global, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+    )
     if not contours:
         print(f"No contours found in {image_path}")
         return
-    
+
     # Get the largest contour
     largest_area = 0
     largest_contour = None
@@ -30,20 +41,24 @@ def process_image(image_path, output_dir):
         if area > largest_area:
             largest_area = area
             largest_contour = contour_ch
-    
+
     if largest_contour is None:
         print(f"No valid contour found in {image_path}")
         return
-    
-    contour_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)  # Convert grayscale to BGR for colored drawing
-    cv2.drawContours(contour_img, [largest_contour], 0, (0, 0, 255), 3)  # Draw the largest contour in red
-    
+
+    contour_img = cv2.cvtColor(
+        img, cv2.COLOR_GRAY2BGR
+    )  # Convert grayscale to BGR for colored drawing
+    cv2.drawContours(
+        contour_img, [largest_contour], 0, (0, 0, 255), 3
+    )  # Draw the largest contour in red
+
     # --- Improved Corner Detection ---
     # Approximate the contour to a polygon with four points
     perimeter = cv2.arcLength(largest_contour, True)
     epsilon = 0.01 * perimeter  # Initial approximation parameter (1% of perimeter)
     approx = cv2.approxPolyDP(largest_contour, epsilon, True)
-    
+
     # Adjust epsilon until we get exactly 4 points
     max_attempts = 10
     attempt = 0
@@ -51,14 +66,16 @@ def process_image(image_path, output_dir):
         epsilon *= 1.2  # Increase epsilon by 20% each iteration
         approx = cv2.approxPolyDP(largest_contour, epsilon, True)
         attempt += 1
-    
+
     if len(approx) != 4:
-        print(f"Could not approximate to four points for {image_path} after {max_attempts} attempts")
+        print(
+            f"Could not approximate to four points for {image_path} after {max_attempts} attempts"
+        )
         return
-    
+
     # Extract the four points
     points = [pt[0] for pt in approx]
-    
+
     # Order points: top-left, top-right, bottom-left, bottom-right
     points.sort(key=lambda p: p[1])  # Sort by y-coordinate
     top_points = points[:2]
@@ -67,53 +84,91 @@ def process_image(image_path, output_dir):
     bottom_points.sort(key=lambda p: p[0])  # Sort bottom points by x-coordinate
     top_left, top_right = top_points
     bottom_left, bottom_right = bottom_points
-    
+
     # Draw the points on a copy of the original image
     points_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     for pt in [top_left, top_right, bottom_left, bottom_right]:
         cv2.circle(points_img, tuple(map(int, pt)), 15, (0, 0, 255), -1)
-    
+
     # Define comparison points (destination corners)
     top_left_comp = (0, 0)
     bottom_left_comp = (0, img.shape[0])
     top_right_comp = (img.shape[1], 0)
     bottom_right_comp = (img.shape[1], img.shape[0])
-    
+
     # Create the warp matrix based on the points and the destination points
     warp_matrix = cv2.getPerspectiveTransform(
         np.float32([top_left, bottom_left, top_right, bottom_right]),
-        np.float32([top_left_comp, bottom_left_comp, top_right_comp, bottom_right_comp])
+        np.float32(
+            [top_left_comp, bottom_left_comp, top_right_comp, bottom_right_comp]
+        ),
     )
 
     # Apply the warp matrix to the image
     warped_img = cv2.warpPerspective(img, warp_matrix, (img.shape[1], img.shape[0]))
-    
-    # Save images
-    base_filename = os.path.splitext(os.path.basename(image_path))[0]
-    image_folder = os.path.join(output_dir, base_filename)
-    os.makedirs(image_folder, exist_ok=True)
 
-    cv2.imwrite(os.path.join(image_folder, f'{base_filename}_original.jpg'), img)
-    cv2.imwrite(os.path.join(image_folder, f'{base_filename}_corners.jpg'), points_img)
-    cv2.imwrite(os.path.join(image_folder, f'{base_filename}_contour.jpg'), contour_img)
-    cv2.imwrite(os.path.join(image_folder, f'{base_filename}_warped.jpg'), warped_img)
-    cv2.imwrite(os.path.join(image_folder, f'{base_filename}_threshold.jpg'), th_global)
+    if output_dir is not None:
+        # Save images
+        base_filename = os.path.splitext(os.path.basename(image_path))[0]
+        image_folder = os.path.join(output_dir, base_filename)
+        os.makedirs(image_folder, exist_ok=True)
 
+        cv2.imwrite(os.path.join(image_folder, f"{base_filename}_original.jpg"), img)
+        cv2.imwrite(os.path.join(image_folder, f"{base_filename}_corners.jpg"), points_img)
+        cv2.imwrite(os.path.join(image_folder, f"{base_filename}_contour.jpg"), contour_img)
+        cv2.imwrite(os.path.join(image_folder, f"{base_filename}_warped.jpg"), warped_img)
+        cv2.imwrite(os.path.join(image_folder, f"{base_filename}_threshold.jpg"), th_global)
+        cv2.imwrite(os.path.join(image_folder, f"{base_filename}_canny.jpg"), canny)
+
+    board = [[0] * 8 for _ in range(8)]  # placeholder for board
+    predictions = {
+        "corners": {
+            "bottom_left": bottom_left,
+            "bottom_right": bottom_right,
+            "top_left": top_left,
+            "top_right": top_right,
+        },
+        "board": board,
+        "detected_pieces": [],
+        "num_pieces": sum([sum(row) for row in board]),
+    }
+
+    print()
     print(f"Processed {base_filename}")
+    return predictions
+
 
 # Create output directory if it doesn’t exist
-output_dir = 'output_images'
+output_dir = "output_images"
 os.makedirs(output_dir, exist_ok=True)
 
+dataset = get_dataset()
+
 # Process all images in the images directory
-images_dir = './data/images'
+images_dir = os.path.join("data", "images")
+
+EVALUATE = True
+if EVALUATE:
+    dataset = get_dataset()
+
+
 for filename in os.listdir(images_dir):
-    if filename.endswith(('.jpg', '.jpeg', '.png')):
+    if filename.endswith((".jpg", ".jpeg", ".png")):
         image_path = os.path.join(images_dir, filename)
-        process_image(image_path, output_dir)
+        output_json = process_image(image_path, output_dir)
+        if EVALUATE:
+            image_annotations = get_annotations_by_image_name(filename, dataset)
+            evaluations = evaluate_predictions(
+                image_annotations,
+                output_json,
+                eval_board=False,
+                eval_num_pieces=False,
+                verbose=True,
+            )
+            print(evaluations)
 
 # Uncomment the following line to process a single image
-#image_path = PATH_TO_IMAGE
-#process_image(image_path, output_dir)
+# image_path = PATH_TO_IMAGE
+# process_image(image_path, output_dir)
 
 print(f"All images processed. Results saved to {output_dir}")
