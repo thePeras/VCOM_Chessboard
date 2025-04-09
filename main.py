@@ -18,6 +18,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
 
     # Apply a Gaussian blur - To eliminate the noise in segmentation
     blur_img = cv2.GaussianBlur(img, (11, 11), 0)
+    canny = cv2.Canny(img, 150, 220)
 
     # Apply global binary threshold - Board segmentation
     ret, th_global = cv2.threshold(blur_img, 200, 255, cv2.THRESH_BINARY)
@@ -106,13 +107,14 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
         base_filename = os.path.splitext(os.path.basename(image_path))[0]
         image_folder = os.path.join(output_dir, base_filename)
         os.makedirs(image_folder, exist_ok=True)
+
         output_handlers = [
             ('original', lambda: img),
             ('corners', lambda: points_img),
             ('contour', lambda: contour_img),
             ('threshold', lambda: th_global),
             ('warped', lambda: warped_img),
-            ('canny_edges', lambda: cv2.Canny(warped_img, 100, 200))
+            ('canny_edges', lambda: canny)
         ]
         for output_type, get_image in output_handlers:
             if output_config.get(output_type, False):
@@ -137,22 +139,6 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     print(f"Processed {base_filename}")
     return predictions
 
-# Position of the pieces on the board (8x8 matrix with 0/1 values)
-def get_board(image_path):
-    # TODO
-    return []
-
-# Position of the pieces on the image (bounding boxes)
-def get_detected_pieces(image_path):
-    # TODO
-    return []
-
-# Total number of black/white pieces on the board
-def get_number_of_pieces(image_path):
-    # TODO
-    # This method is just an intersection of the board with the detected pieces bounding boxes
-    return 0
-
 def process_all_images(output_dir, output_config, eval_predictions: bool = True):
     images_dir = './data/images'
     output = []
@@ -163,19 +149,20 @@ def process_all_images(output_dir, output_config, eval_predictions: bool = True)
     for filename in os.listdir(images_dir):
         if filename.endswith(('.jpg', '.jpeg', '.png')):
             image_path = os.path.join(images_dir, filename)
+            predictions = process_image(image_path, output_dir, output_config)
+
             output.append({
                 "image": image_path,
-                "num_pieces": get_number_of_pieces(image_path),
-                "board": get_board(image_path),
-                "detected_pieces": get_detected_pieces(image_path),
+                "num_pieces": predictions['num_pieces'],
+                "board": predictions['board'],
+                "detected_pieces": predictions['detected_pieces'],
             })
 
-            image_output_dict = process_image(image_path, output_dir, output_config)
             if eval_predictions:
                 image_annotations = get_annotations_by_image_name(filename, dataset)
                 evaluations = evaluate_predictions(
                     image_annotations,
-                    image_output_dict,
+                    predictions,
                     eval_board=False,
                     eval_num_pieces=False,
                     verbose=True,
@@ -188,24 +175,38 @@ def process_all_images(output_dir, output_config, eval_predictions: bool = True)
     print("Output JSON file created.")
     print(f"All images processed. Results saved to {output_dir}")
 
-def process_input(output_dir, output_config):
+def process_input(output_dir, output_config, eval_predictions: bool = True):
     if not os.path.exists('input.json'):
         print("input.json file not found.")
         exit(1)
 
     with open('input.json', 'r') as f:
         data = json.load(f)
+    
+    if eval_predictions:
+        dataset = get_dataset()
 
     output = []
     for image in data['image_files']:
         image_path = os.path.join("data/", image) # TODO: Delete data/ on submission
+        predictions = process_image(image_path, output_dir, output_config)
+        
         output.append({
             "image": image_path,
-            "num_pieces": get_number_of_pieces(image_path),
-            "board": get_board(image_path),
-            "detected_pieces": get_detected_pieces(image_path),
+            "num_pieces": predictions['num_pieces'],
+            "board": predictions['board'],
+            "detected_pieces": predictions['detected_pieces'],
         })
-        process_image(image_path, output_dir, output_config)
+        if eval_predictions:
+            image_annotations = get_annotations_by_image_name(image, dataset)
+            evaluations = evaluate_predictions(
+                image_annotations,
+                predictions,
+                eval_board=False,
+                eval_num_pieces=False,
+                verbose=True,
+            )
+            print(evaluations)
     
     with open('output.json', 'w') as f:
         json.dump(output, f, indent=4)
