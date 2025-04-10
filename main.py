@@ -187,12 +187,44 @@ def filter_and_rectify_hough_lines(lines, image_shape, angle_threshold=10, dista
         else:
             verticals[-1] = (verticals[-1] + x) // 2
 
-    # Rectify lines: vertical lines become (x, 0) -> (x, height) and horizontal lines become (0, y) -> (width, y)
-    height, width = image_shape[:2]
-    rectified_verticals = [(x, 0, x, height) for x in verticals]
-    rectified_horizontals = [(0, y, width, y) for y in horizontals]
+    return verticals, horizontals
 
-    return rectified_verticals, rectified_horizontals, verticals, horizontals
+def identify_and_add_missing_lines(verticals, horizontals, image_shape, max_gap_ratio=1.8):
+    verticals.sort()
+    horizontals.sort()
+    
+    new_verticals = verticals.copy()
+    if len(verticals) >= 2:
+        gaps = [verticals[i+1] - verticals[i] for i in range(len(verticals)-1)]
+        median_gap = sorted(gaps)[len(gaps)//2]  # Using median is more robust than mean
+        
+        for i in range(len(verticals)-1):
+            current_gap = verticals[i+1] - verticals[i]
+            if current_gap > max_gap_ratio * median_gap:
+                # Calculate how many lines are missing
+                n_missing = round(current_gap / median_gap) - 1
+                for j in range(1, n_missing + 1):
+                    # Add estimated line position
+                    new_x = verticals[i] + j * (current_gap / (n_missing + 1))
+                    new_verticals.append(int(new_x))
+    
+    new_horizontals = horizontals.copy()
+    if len(horizontals) >= 2:
+        gaps = [horizontals[i+1] - horizontals[i] for i in range(len(horizontals)-1)]
+        median_gap = sorted(gaps)[len(gaps)//2]
+        
+        for i in range(len(horizontals)-1):
+            current_gap = horizontals[i+1] - horizontals[i]
+            if current_gap > max_gap_ratio * median_gap:
+                n_missing = round(current_gap / median_gap) - 1
+                for j in range(1, n_missing + 1):
+                    new_y = horizontals[i] + j * (current_gap / (n_missing + 1))
+                    new_horizontals.append(int(new_y))
+    
+    new_verticals.sort()
+    new_horizontals.sort()
+    
+    return new_verticals, new_horizontals
 
 def compute_intersections(verticals, horizontals):
     intersections = []
@@ -448,9 +480,15 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
         return
 
     if lines is not None:
-        rectified_verticals, rectified_horizontals, verticals, horizontals = filter_and_rectify_hough_lines(
+        verticals, horizontals = filter_and_rectify_hough_lines(
             lines, img.shape, angle_threshold=10, distance_threshold=20
         )
+        
+        verticals, horizontals = identify_and_add_missing_lines(verticals, horizontals, img.shape)
+        
+        rectified_verticals = [(x, 0, x, img.shape[0]) for x in verticals]
+        rectified_horizontals = [(0, y, img.shape[1], y) for y in horizontals]
+        
         hough_lines_rectified_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
         filtered_intersections_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
         
@@ -780,7 +818,7 @@ if __name__ == "__main__":
         'corners': False,
         'contour': False,
         'threshold': False,
-        'warped': True,
+        'warped': False,
         'clahe': False,
         'blurred_warped': False,
         'canny_edges': False,
