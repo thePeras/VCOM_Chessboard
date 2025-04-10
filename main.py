@@ -4,6 +4,9 @@ from shapely.geometry import Polygon
 import pandas as pd
 
 import os
+import threading
+from queue import Queue
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 import json
 import math
@@ -147,8 +150,7 @@ def convex_hull_intersection(poly1, poly2):
 
     return poly1
 
-##=================================================================================================================##
-
+##==================================== Square and Piece Detection Helpers ====================================================##
 
 def filter_and_rectify_hough_lines(lines, image_shape, angle_threshold=10, distance_threshold=20):
 
@@ -238,7 +240,7 @@ def filter_intersections_by_distance(intersections, center):
     
     return filtered_intersections, square_side
 
-def has_piece(image, square_vertices) -> bool:
+def has_piece(image, square_vertices) -> bool:  # TODO: Improve this algorithm
     # Create a mask for the square region
     mask = np.zeros(image.shape, dtype=np.uint8)
     pts = np.array([square_vertices], dtype=np.int32)
@@ -550,37 +552,73 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     return predictions
 
 
-def process_all_images(output_dir, output_config, eval_predictions: bool = True, show_all_images: bool = False):
+def process_all_images(output_dir, output_config, eval_predictions: bool = True, show_all_images: bool = False, max_workers: int = None):
     images_dir = "./data/images"
     output = []
-
+    
+    # Get a list of all image files
+    image_files = [
+        filename for filename in os.listdir(images_dir)
+        if filename.endswith((".jpg", ".jpeg", ".png"))
+    ]
+    
+    if not image_files:
+        print("No image files found in directory.")
+        return
+    
+    # Multi-threading setup
+    if max_workers is None:
+        max_workers = os.cpu_count() or 4
+    results_queue = Queue()
+    lock = threading.Lock()
+    
     if eval_predictions:
         dataset = get_dataset()
         image_evaluations = []
 
-    for filename in os.listdir(images_dir):
-        if filename.endswith((".jpg", ".jpeg", ".png")):
-            image_path = os.path.join(images_dir, filename)
+    print(f"Processing {len(image_files)} images with {max_workers} threads...")
+    
+    # Define a worker function to process a single image
+    def process_image_worker(filename):
+        image_path = os.path.join(images_dir, filename)
+        try:
             predictions = process_image(image_path, output_dir, output_config)
-
-            output.append({
-                "image": image_path,
-                "num_pieces": predictions['num_pieces'],
-                "board": predictions['board'],
-                "detected_pieces": predictions['detected_pieces'],
-            })
-
-            if eval_predictions:
-                image_annotations = get_annotations_by_image_name(filename, dataset)
-                evaluations = evaluate_predictions(
-                    image_annotations,
-                    predictions,
-                    eval_board=False,
-                    eval_num_pieces=False,
-                    verbose=True,
-                )
-                image_evaluations.append({"image_path": image_path, **evaluations})
-
+            if predictions:
+                results_queue.put({
+                    "image": image_path,
+                    "num_pieces": predictions['num_pieces'],
+                    "board": predictions['board'],
+                    "detected_pieces": predictions['detected_pieces'],
+                    "filename": filename,
+                })
+                
+                if eval_predictions:
+                    image_annotations = get_annotations_by_image_name(filename, dataset)
+                    evaluations = evaluate_predictions(
+                        image_annotations,
+                        predictions,
+                        eval_board=False,
+                        eval_num_pieces=False,
+                        verbose=False,
+                    )
+                    with lock:
+                        image_evaluations.append({"image_path": image_path, **evaluations})
+        except Exception as e:
+            print(f"Error processing {filename}: {e}")
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(process_image_worker, filename) for filename in image_files]
+        for future in futures:
+            try:
+                future.result()
+            except Exception as e:
+                print(f"Thread error: {e}")
+    
+    while not results_queue.empty():
+        output.append(results_queue.get())
+    
+    output.sort(key=lambda x: x.get("image", ""))
+    
     if eval_predictions:
         TOO_LARGE_CORNER_ERROR = 50000
         TOO_SMALL_CORNER_ERROR = 20000  # the corners we define are different from the corners in the annotations
@@ -588,9 +626,6 @@ def process_all_images(output_dir, output_config, eval_predictions: bool = True,
         evaluations["clickable_image_path"] = evaluations["image_path"].apply(
             lambda x: os.path.splitext(os.path.basename(x))[0]
         )
-        # by_corners = evaluations[
-        #     (evaluations["corners"] >= TOO_LARGE_CORNER_ERROR) | (evaluations["corners"] <= TOO_SMALL_CORNER_ERROR)
-        # ]
         by_corners = evaluations
         by_corners = by_corners.sort_values(by="corners", ascending=False)
 
@@ -614,7 +649,6 @@ def process_all_images(output_dir, output_config, eval_predictions: bool = True,
 
     print("Output JSON file created.")
     print(f"All images processed. Results saved to {output_dir}")
-    
 
 
 def process_input(output_dir, output_config, eval_predictions: bool = True):
