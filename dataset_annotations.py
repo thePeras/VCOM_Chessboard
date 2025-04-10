@@ -165,6 +165,39 @@ def draw_annotations(image_name, image_path, dataset):
 
     return image
 
+def evaluate_corners(true_corners, pred_corners, verbose: bool = False):
+    corner_names = ["bottom_left", "bottom_right", "top_left", "top_right"]
+    comparisons = {
+        "bottom_left": ["bottom_left", "bottom_right", "top_right", "top_left"],
+        "bottom_right": ["bottom_right", "top_right", "top_left", "bottom_left"],
+        "top_right": ["top_right", "top_left", "bottom_left", "bottom_right"],
+        "top_left": ["top_left", "bottom_left", "bottom_right", "top_right"],
+    }
+
+    min_corners_mse = float("inf")
+    for i in range(4):
+        corners_mse = 0
+        pred_corners_copy = pred_corners.copy()
+
+        for corner_name in corner_names:
+            other_corner_name = comparisons[corner_name][i]
+            pred_corners_copy[corner_name] = pred_corners[other_corner_name]
+
+        for corner_name in corner_names:
+            corners_mse += (
+                true_corners[corner_name][0] - pred_corners_copy[corner_name][0]
+            ) ** 2 + (
+                true_corners[corner_name][1] - pred_corners_copy[corner_name][1]
+            ) ** 2
+
+        corners_mse = corners_mse / len(corner_names)
+        min_corners_mse = min(min_corners_mse, corners_mse)
+        if verbose:
+            print(
+                f"Corners MSE: {corners_mse:.0f}, orientation: {i}"
+            )
+    return min_corners_mse
+
 
 def evaluate_predictions(
     image_annotations,
@@ -203,19 +236,18 @@ def evaluate_predictions(
 
     if eval_corners:
         # Now eval the corners
-        corner_names = ["bottom_left", "bottom_right", "top_left", "top_right"]
-
-        corners_mse = 0
-        for corner_name in corner_names:
-            true_corner = image_annotations["corners"][corner_name]
-            pred_corner = predictions["corners"][corner_name]
-            corners_mse += (true_corner[0] - pred_corner[0]) ** 2 + (
-                true_corner[1] - pred_corner[1]
-            ) ** 2
-        corners_mse = corners_mse / len(corner_names)
-        corners_mse = corners_mse**0.5
+        corners_mse = evaluate_corners(image_annotations["corners"], predictions["corners"])
+        # for corner_name in corner_names:
+        #     true_corner = [corner_name]
+            
+        #     pred_corner = predictions["corners"][corner_name]
+        #     corners_mse += (true_corner[0] - pred_corner[0]) ** 2 + (
+        #         true_corner[1] - pred_corner[1]
+        #     ) ** 2
+        # corners_mse = corners_mse / len(corner_names)
+        # corners_mse = corners_mse**0.5
         if verbose:
-            print(f"Corners MSE: {corners_mse}")
+            print(f"Corners MSE: {corners_mse:.2f}")
 
     return {
         "num_pieces": num_pieces_diff,
