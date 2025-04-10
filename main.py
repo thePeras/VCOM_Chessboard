@@ -4,6 +4,9 @@ from shapely.geometry import Polygon
 import pandas as pd
 
 import os
+import threading
+from queue import Queue
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 import json
 import math
@@ -13,7 +16,6 @@ from dataset_annotations import (
     get_dataset,
     get_annotations_by_image_name,
 )
-
 
 ##==================================== Chessboard corner detection Helpers ====================================================##
 
@@ -148,8 +150,7 @@ def convex_hull_intersection(poly1, poly2):
 
     return poly1
 
-##=================================================================================================================##
-
+##==================================== Square and Piece Detection Helpers ====================================================##
 
 def filter_and_rectify_hough_lines(lines, image_shape, angle_threshold=10, distance_threshold=20):
 
@@ -186,12 +187,44 @@ def filter_and_rectify_hough_lines(lines, image_shape, angle_threshold=10, dista
         else:
             verticals[-1] = (verticals[-1] + x) // 2
 
-    # Rectify lines: vertical lines become (x, 0) -> (x, height) and horizontal lines become (0, y) -> (width, y)
-    height, width = image_shape[:2]
-    rectified_verticals = [(x, 0, x, height) for x in verticals]
-    rectified_horizontals = [(0, y, width, y) for y in horizontals]
+    return verticals, horizontals
 
-    return rectified_verticals, rectified_horizontals, verticals, horizontals
+def identify_and_add_missing_lines(verticals, horizontals, image_shape, max_gap_ratio=1.8):
+    verticals.sort()
+    horizontals.sort()
+    
+    new_verticals = verticals.copy()
+    if len(verticals) >= 2:
+        gaps = [verticals[i+1] - verticals[i] for i in range(len(verticals)-1)]
+        median_gap = sorted(gaps)[len(gaps)//2]  # Using median is more robust than mean
+        
+        for i in range(len(verticals)-1):
+            current_gap = verticals[i+1] - verticals[i]
+            if current_gap > max_gap_ratio * median_gap:
+                # Calculate how many lines are missing
+                n_missing = round(current_gap / median_gap) - 1
+                for j in range(1, n_missing + 1):
+                    # Add estimated line position
+                    new_x = verticals[i] + j * (current_gap / (n_missing + 1))
+                    new_verticals.append(int(new_x))
+    
+    new_horizontals = horizontals.copy()
+    if len(horizontals) >= 2:
+        gaps = [horizontals[i+1] - horizontals[i] for i in range(len(horizontals)-1)]
+        median_gap = sorted(gaps)[len(gaps)//2]
+        
+        for i in range(len(horizontals)-1):
+            current_gap = horizontals[i+1] - horizontals[i]
+            if current_gap > max_gap_ratio * median_gap:
+                n_missing = round(current_gap / median_gap) - 1
+                for j in range(1, n_missing + 1):
+                    new_y = horizontals[i] + j * (current_gap / (n_missing + 1))
+                    new_horizontals.append(int(new_y))
+    
+    new_verticals.sort()
+    new_horizontals.sort()
+    
+    return new_verticals, new_horizontals
 
 def compute_intersections(verticals, horizontals):
     intersections = []
@@ -239,11 +272,64 @@ def filter_intersections_by_distance(intersections, center):
     
     return filtered_intersections, square_side
 
+def has_piece(image, square_vertices) -> bool:  # TODO: Improve this algorithm
+    # Create a mask for the square region
+    mask = np.zeros(image.shape, dtype=np.uint8)
+    pts = np.array([square_vertices], dtype=np.int32)
+    cv2.fillPoly(mask, pts, 255)
+    
+    # Extract the square region using the mask
+    square_region = cv2.bitwise_and(image, image, mask=mask)
+    
+    # Get bounding box of the square for cropping
+    x_coords = [p[0] for p in square_vertices]
+    y_coords = [p[1] for p in square_vertices]
+    x_min, x_max = max(0, min(x_coords)), min(image.shape[1], max(x_coords))
+    y_min, y_max = max(0, min(y_coords)), min(image.shape[0], max(y_coords))
+    
+    # Crop to bounding box
+    cropped = square_region[y_min:y_max, x_min:x_max]
+    if cropped.size == 0:
+        return False
+    
+    # Apply thresholding to separate pieces from background
+    _, thresh = cv2.threshold(cropped, 120, 255, cv2.THRESH_BINARY_INV)
+    
+    # Apply morphological operations to clean up noise
+    kernel = np.ones((3, 3), np.uint8)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+    
+    # Find contours in the thresholded image
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if not contours:
+        return False
+    
+    # Calculate the area of the square
+    square_area = (x_max - x_min) * (y_max - y_min)
+    
+    # Check for sufficiently large contours that could be pieces
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        # A piece should occupy a significant portion of the square but not too much
+        area_ratio = area / square_area
+        
+        if 0.05 < area_ratio < 0.8:
+            # Calculate circularity/roundness of the contour
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter > 0:
+                circularity = 4 * np.pi * area / (perimeter * perimeter)
+                
+                # Ellipses/circles have circularity closer to 1
+                # But incomplete ellipses will have lower values
+                if 0.2 < circularity < 0.9:
+                    return True
+    
+    return False
+    
 ##====================================== MAIN IMAGE PROCESSING FUNCTION =========================================================##
 
-def process_image(
-    image_path, output_dir: Optional[str] = None, output_config: Optional[dict] = None, default_show_image: bool = False,
-):
+def process_image(image_path, output_dir: Optional[str] = None, output_config: Optional[dict] = None, default_show_image: bool = False):
     THRESHOLD_MAXVAL: int = 255
     THRESHOLD_THRESH: int = 200
     THRESHOLD_SATURATION_MAX: int = 50
@@ -394,9 +480,15 @@ def process_image(
         return
 
     if lines is not None:
-        rectified_verticals, rectified_horizontals, verticals, horizontals = filter_and_rectify_hough_lines(
+        verticals, horizontals = filter_and_rectify_hough_lines(
             lines, img.shape, angle_threshold=10, distance_threshold=20
         )
+        
+        verticals, horizontals = identify_and_add_missing_lines(verticals, horizontals, img.shape)
+        
+        rectified_verticals = [(x, 0, x, img.shape[0]) for x in verticals]
+        rectified_horizontals = [(0, y, img.shape[1], y) for y in horizontals]
+        
         hough_lines_rectified_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
         filtered_intersections_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
         
@@ -421,6 +513,35 @@ def process_image(
     else:
         print(f"No lines detected in {image_path}")
 
+    filtered_intersections.sort(key=lambda p: (p[1], p[0]))
+    
+    if len(filtered_intersections) >= 81:
+        rows = cols = 8
+        step = 9
+    else:
+        grid_side = int(math.sqrt(len(filtered_intersections))) - 1
+        rows = cols = grid_side if grid_side > 0 else 0
+        step = grid_side + 1
+        print(f"Using a {rows}x{cols} grid with {len(filtered_intersections)} intersections")
+    
+    board = [[0] * cols for _ in range(rows)] if rows > 0 and cols > 0 else [[0]]
+
+    pieces_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
+    
+    for i in range(rows):
+        for j in range(cols):
+            if (i+1) * step + j + 1 < len(filtered_intersections):
+                square_corners = [
+                    filtered_intersections[i * step + j],
+                    filtered_intersections[i * step + j + 1],
+                    filtered_intersections[(i + 1) * step + j + 1],
+                    filtered_intersections[(i + 1) * step + j],
+                ]
+
+                if has_piece(warped_img, square_corners):
+                    board[i][j] = 1
+                    cv2.polylines(pieces_img, [np.array(square_corners)], True, (0, 0, 255), 10)
+
     if output_dir is not None:
         base_filename = os.path.splitext(os.path.basename(image_path))[0]
         image_folder = os.path.join(output_dir, base_filename)
@@ -440,6 +561,7 @@ def process_image(
             ('hough_lines', lambda: hough_lines_img),
             ('hough_lines_rectified', lambda: hough_lines_rectified_img),
             ('filtered_intersections', lambda: filtered_intersections_img),
+            ('pieces', lambda: pieces_img),
         ]
 
         for output_type, get_image in output_handlers:
@@ -451,7 +573,6 @@ def process_image(
                     image,
                 )
 
-    board = [[0] * 8 for _ in range(8)]  # placeholder for board
     predictions = {
         "image": image_path,
         "corners": {
@@ -465,42 +586,77 @@ def process_image(
         "num_pieces": sum([sum(row) for row in board]),
     }
 
-    print()
     print(f"Processed {base_filename}")
     return predictions
 
 
-def process_all_images(output_dir, output_config, eval_predictions: bool = True, show_all_images: bool = False):
+def process_all_images(output_dir, output_config, eval_predictions: bool = True, show_all_images: bool = False, max_workers: int = None):
     images_dir = "./data/images"
     output = []
-
+    
+    # Get a list of all image files
+    image_files = [
+        filename for filename in os.listdir(images_dir)
+        if filename.endswith((".jpg", ".jpeg", ".png"))
+    ]
+    
+    if not image_files:
+        print("No image files found in directory.")
+        return
+    
+    # Multi-threading setup
+    if max_workers is None:
+        max_workers = os.cpu_count() or 4
+    results_queue = Queue()
+    lock = threading.Lock()
+    
     if eval_predictions:
         dataset = get_dataset()
         image_evaluations = []
 
-    for filename in os.listdir(images_dir):
-        if filename.endswith((".jpg", ".jpeg", ".png")):
-            image_path = os.path.join(images_dir, filename)
+    print(f"Processing {len(image_files)} images with {max_workers} threads...")
+    
+    # Define a worker function to process a single image
+    def process_image_worker(filename):
+        image_path = os.path.join(images_dir, filename)
+        try:
             predictions = process_image(image_path, output_dir, output_config)
-
-            output.append({
-                "image": image_path,
-                "num_pieces": predictions['num_pieces'],
-                "board": predictions['board'],
-                "detected_pieces": predictions['detected_pieces'],
-            })
-
-            if eval_predictions:
-                image_annotations = get_annotations_by_image_name(filename, dataset)
-                evaluations = evaluate_predictions(
-                    image_annotations,
-                    predictions,
-                    eval_board=False,
-                    eval_num_pieces=False,
-                    verbose=True,
-                )
-                image_evaluations.append({"image_path": image_path, **evaluations})
-
+            if predictions:
+                results_queue.put({
+                    "image": image_path,
+                    "num_pieces": predictions['num_pieces'],
+                    "board": predictions['board'],
+                    "detected_pieces": predictions['detected_pieces'],
+                    "filename": filename,
+                })
+                
+                if eval_predictions:
+                    image_annotations = get_annotations_by_image_name(filename, dataset)
+                    evaluations = evaluate_predictions(
+                        image_annotations,
+                        predictions,
+                        eval_board=False,
+                        eval_num_pieces=False,
+                        verbose=False,
+                    )
+                    with lock:
+                        image_evaluations.append({"image_path": image_path, **evaluations})
+        except Exception as e:
+            print(f"Error processing {filename}: {e}")
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(process_image_worker, filename) for filename in image_files]
+        for future in futures:
+            try:
+                future.result()
+            except Exception as e:
+                print(f"Thread error: {e}")
+    
+    while not results_queue.empty():
+        output.append(results_queue.get())
+    
+    output.sort(key=lambda x: x.get("image", ""))
+    
     if eval_predictions:
         TOO_LARGE_CORNER_ERROR = 50000
         TOO_SMALL_CORNER_ERROR = 20000  # the corners we define are different from the corners in the annotations
@@ -508,9 +664,6 @@ def process_all_images(output_dir, output_config, eval_predictions: bool = True,
         evaluations["clickable_image_path"] = evaluations["image_path"].apply(
             lambda x: os.path.splitext(os.path.basename(x))[0]
         )
-        # by_corners = evaluations[
-        #     (evaluations["corners"] >= TOO_LARGE_CORNER_ERROR) | (evaluations["corners"] <= TOO_SMALL_CORNER_ERROR)
-        # ]
         by_corners = evaluations
         by_corners = by_corners.sort_values(by="corners", ascending=False)
 
@@ -534,7 +687,6 @@ def process_all_images(output_dir, output_config, eval_predictions: bool = True,
 
     print("Output JSON file created.")
     print(f"All images processed. Results saved to {output_dir}")
-    
 
 
 def process_input(output_dir, output_config, eval_predictions: bool = True):
@@ -576,23 +728,26 @@ def process_input(output_dir, output_config, eval_predictions: bool = True):
     print("Output JSON file created.")
 
 
-def stitch_warped_images(output_dir, grid_size=None, output_filename="../stitched_warped_images.jpg"):
-    warped_images = []
+def stitch_images(output_dir, image_type='warped',  grid_size=(7,8), output_filename=None):
+    target_images = []
     for root, dirs, files in os.walk(output_dir):
         for file in files:
-            if file.endswith('_warped.jpg'):
-                warped_images.append(os.path.join(root, file))
+            if file.endswith(f'_{image_type}.jpg'):
+                target_images.append(os.path.join(root, file))
     
-    if not warped_images:
-        print("No warped images found.")
+    if not target_images:
+        print(f"No {image_type} images found.")
         return None
     
-    warped_images.sort()
+    target_images.sort()
+    
+    if output_filename is None:
+        output_filename = f"stitched_{image_type}_images.jpg"
     
     images = []
     max_height, max_width = 0, 0
     
-    for img_path in warped_images:
+    for img_path in target_images:
         img = cv2.imread(img_path)
         if img is None:
             print(f"Warning: Could not load image {img_path}")
@@ -637,7 +792,7 @@ def stitch_warped_images(output_dir, grid_size=None, output_filename="../stitche
     output_path = os.path.join(output_dir, output_filename)
     cv2.imwrite(output_path, canvas)
     
-    print(f"Stitched {len(images)} images into grid {grid_size} at {output_path}")
+    print(f"Stitched {len(images)} {image_type} images into grid {grid_size} at {output_path}")
     return output_path
 
 
@@ -660,19 +815,20 @@ if __name__ == "__main__":
     # --- Configure output options ---
     output_config = {
         'original': False,
-        'corners': True,
+        'corners': False,
         'contour': False,
         'threshold': False,
-        'warped': True,
+        'warped': False,
         'clahe': False,
         'blurred_warped': False,
         'canny_edges': False,
         'dilated': False,
         'hough_lines': False,
-        'hough_lines_rectified': True,
+        'hough_lines_rectified': False,
         'filtered_intersections': True,
+        'pieces': False,
     }
 
-    process_all_images(output_dir, output_config)
-    #process_input(output_dir, output_config)
-    #stitch_warped_images(output_dir, grid_size=(7,8))
+    process_all_images(output_dir, output_config, eval_predictions=False)
+    #process_input(output_dir, output_config, eval_predictions=False)
+    stitch_images(output_dir, image_type='filtered_intersections')
