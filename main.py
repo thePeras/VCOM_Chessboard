@@ -510,8 +510,8 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     else:
         rotated_img = warped_gray_img.copy()
     
-    horse_img = warped_gray_img.copy()
-    cv2.circle(horse_img, horse_location, 50, (0, 255, 0), -1)
+    horse_img = cv2.cvtColor(warped_gray_img, cv2.COLOR_GRAY2BGR)
+    cv2.circle(horse_img, horse_location, 50, (0, 0, 255), -1)
 
     # CLAHE
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -775,7 +775,6 @@ def process_input(output_dir, output_config, eval_predictions: bool = True):
             "num_pieces": predictions['num_pieces'],
             "board": predictions['board'],
             "detected_pieces": predictions['detected_pieces'],
-            "horse_corner": predictions['horse_corner'],
         })
         if eval_predictions:
             image_annotations = get_annotations_by_image_name(image, dataset)
@@ -897,8 +896,8 @@ if __name__ == "__main__":
         'rotated': True,
     }
 
-    process_all_images(output_dir, output_config, eval_predictions=False)
-    #process_input(output_dir, output_config, eval_predictions=False)
+    #process_all_images(output_dir, output_config, eval_predictions=False)
+    process_input(output_dir, output_config, eval_predictions=False)
     for key,value in output_config.items():
         if value:
             stitch_images(output_dir, image_type=key)
