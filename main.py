@@ -171,8 +171,8 @@ def find_orientation(image):
     }
     
     best_score = -1
-    best_corner = None
     best_match_loc = None
+    best_rotation = None
     
     for corner_name, (corner_img, horse_template) in orientations.items():
         target_size = corner_size // 4
@@ -186,24 +186,23 @@ def find_orientation(image):
         
         if max_val > best_score:
             best_score = max_val
-            best_corner = corner_name
             
             if corner_name == "top_left":
                 match_x, match_y = max_loc
+                best_rotation = cv2.ROTATE_90_COUNTERCLOCKWISE
             elif corner_name == "top_right":
                 match_x, match_y = width - corner_size + max_loc[0], max_loc[1]
+                best_rotation = cv2.ROTATE_180
             elif corner_name == "bottom_left":
                 match_x, match_y = max_loc[0], height - corner_size + max_loc[1]
+                best_rotation = None
             elif corner_name == "bottom_right":
                 match_x, match_y = width - corner_size + max_loc[0], height - corner_size + max_loc[1]
+                best_rotation = cv2.ROTATE_90_CLOCKWISE
                 
             best_match_loc = (match_x, match_y)
-    
-    result_img = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    if best_match_loc:
-        cv2.circle(result_img, best_match_loc, 50, (0, 0, 255), -1)
         
-    return best_corner, result_img
+    return best_rotation, best_match_loc
 
 ##==================================== Square and Piece Detection Helpers ====================================================##
 
@@ -505,16 +504,14 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     warped_gray_img = cv2.warpPerspective(img, warp_matrix, (img.shape[1], img.shape[0]))
     warped_color_img = cv2.warpPerspective(img_color, warp_matrix, (img.shape[1], img.shape[0]))
 
-    horse_corner, horse_img = find_orientation(warped_gray_img)
-
-    # Rotate image according to the horse corner (bottom-left)
-    rotated_img = warped_gray_img.copy()
-    if horse_corner == "top_left":
-        rotated_img = cv2.rotate(rotated_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    elif horse_corner == "top_right":
-        rotated_img = cv2.rotate(rotated_img, cv2.ROTATE_180)
-    elif horse_corner == "bottom_right":
-        rotated_img = cv2.rotate(rotated_img, cv2.ROTATE_90_CLOCKWISE)
+    image_rotation, horse_location = find_orientation(warped_gray_img)
+    if image_rotation is not None:
+        rotated_img = cv2.rotate(warped_gray_img, image_rotation)
+    else:
+        rotated_img = warped_gray_img.copy()
+    
+    horse_img = warped_gray_img.copy()
+    cv2.circle(horse_img, horse_location, 50, (0, 255, 0), -1)
 
     # CLAHE
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -652,7 +649,6 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
         "board": board,
         "detected_pieces": [],
         "num_pieces": sum([sum(row) for row in board]),
-        "horse_corner": horse_corner,
     }
 
     print(f"Processed {base_filename}")
@@ -898,7 +894,7 @@ if __name__ == "__main__":
         'filtered_intersections': False,
         'pieces': False,
         'horse': True,
-        'rotated': False,
+        'rotated': True,
     }
 
     process_all_images(output_dir, output_config, eval_predictions=False)
