@@ -159,62 +159,45 @@ def find_orientation(image):
     if horse_img is None:
         print("Could not load the horse template image")
         return None
-        
-    horse_templates = []
-    horse_templates.append(("top_left", cv2.rotate(horse_img, cv2.ROTATE_90_CLOCKWISE)))
-    horse_templates.append(("top_right", cv2.rotate(horse_img, cv2.ROTATE_180)))
-    horse_templates.append(("bottom_right", cv2.rotate(horse_img, cv2.ROTATE_90_COUNTERCLOCKWISE)))
-    horse_templates.append(("bottom_left", horse_img))
 
-    # save horse templates
-    # for template_name, template_img in horse_templates:
-    #     cv2.imwrite(f"debug/HORSE_{template_name}.jpg", template_img)
-    
     height, width = image.shape
     corner_size = min(width, height) // 4
     
-    corners = {
-        "top_left": image[:corner_size, :corner_size],
-        "top_right": image[:corner_size, width-corner_size:],
-        "bottom_left": image[height-corner_size:, :corner_size],
-        "bottom_right": image[height-corner_size:, width-corner_size:]
+    orientations = {
+        "top_left": (image[:corner_size, :corner_size], cv2.rotate(horse_img, cv2.ROTATE_90_CLOCKWISE)),
+        "top_right": (image[:corner_size, width-corner_size:], cv2.rotate(horse_img, cv2.ROTATE_180)),
+        "bottom_left": (image[height-corner_size:, :corner_size], horse_img),
+        "bottom_right": (image[height-corner_size:, width-corner_size:], cv2.rotate(horse_img, cv2.ROTATE_90_COUNTERCLOCKWISE)),
     }
-
-    # save corners crop 
-    # for corner_name, corner_img in corners.items():
-    #     cv2.imwrite(f"debug/CORNER_{corner_name}.jpg", corner_img)
-
     
     best_score = -1
     best_corner = None
     best_match_loc = None
     
-
-    for corner_name, corner_img in corners.items():
-        for template_name, template in horse_templates:
-            target_size = corner_size // 5
-            resized_template = cv2.resize(template, (target_size, target_size))
+    for corner_name, (corner_img, horse_template) in orientations.items():
+        target_size = corner_size // 4
+        resized_template = cv2.resize(horse_template, (target_size, target_size))
+        
+        if corner_img.shape[0] < resized_template.shape[0] or corner_img.shape[1] < resized_template.shape[1]:
+            continue
             
-            if corner_img.shape[0] < resized_template.shape[0] or corner_img.shape[1] < resized_template.shape[1]:
-                continue
-                
-            result = cv2.matchTemplate(corner_img, resized_template, cv2.TM_CCOEFF_NORMED)
-            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+        result = cv2.matchTemplate(corner_img, resized_template, cv2.TM_CCOEFF_NORMED)
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+        
+        if max_val > best_score:
+            best_score = max_val
+            best_corner = corner_name
             
-            if max_val > best_score:
-                best_score = max_val
-                best_corner = corner_name
+            if corner_name == "top_left":
+                match_x, match_y = max_loc
+            elif corner_name == "top_right":
+                match_x, match_y = width - corner_size + max_loc[0], max_loc[1]
+            elif corner_name == "bottom_left":
+                match_x, match_y = max_loc[0], height - corner_size + max_loc[1]
+            elif corner_name == "bottom_right":
+                match_x, match_y = width - corner_size + max_loc[0], height - corner_size + max_loc[1]
                 
-                if corner_name == "top_left":
-                    match_x, match_y = max_loc
-                elif corner_name == "top_right":
-                    match_x, match_y = width - corner_size + max_loc[0], max_loc[1]
-                elif corner_name == "bottom_left":
-                    match_x, match_y = max_loc[0], height - corner_size + max_loc[1]
-                elif corner_name == "bottom_right":
-                    match_x, match_y = width - corner_size + max_loc[0], height - corner_size + max_loc[1]
-                    
-                best_match_loc = (match_x, match_y)
+            best_match_loc = (match_x, match_y)
     
     result_img = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
     if best_match_loc:
