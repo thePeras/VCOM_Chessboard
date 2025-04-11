@@ -161,10 +161,14 @@ def find_orientation(image):
         return None
         
     horse_templates = []
-    horse_templates.append(("top_left", horse_img))  # Original orientation
-    horse_templates.append(("top_right", cv2.rotate(horse_img, cv2.ROTATE_90_CLOCKWISE)))  
-    horse_templates.append(("bottom_right", cv2.rotate(horse_img, cv2.ROTATE_180)))
-    horse_templates.append(("bottom_left", cv2.rotate(horse_img, cv2.ROTATE_90_COUNTERCLOCKWISE)))
+    horse_templates.append(("top_left", cv2.rotate(horse_img, cv2.ROTATE_90_CLOCKWISE)))
+    horse_templates.append(("top_right", cv2.rotate(horse_img, cv2.ROTATE_180)))
+    horse_templates.append(("bottom_right", cv2.rotate(horse_img, cv2.ROTATE_90_COUNTERCLOCKWISE)))
+    horse_templates.append(("bottom_left", horse_img))
+
+    # save horse templates
+    # for template_name, template_img in horse_templates:
+    #     cv2.imwrite(f"debug/HORSE_{template_name}.jpg", template_img)
     
     height, width = image.shape
     corner_size = min(width, height) // 4
@@ -175,6 +179,11 @@ def find_orientation(image):
         "bottom_left": image[height-corner_size:, :corner_size],
         "bottom_right": image[height-corner_size:, width-corner_size:]
     }
+
+    # save corners crop 
+    # for corner_name, corner_img in corners.items():
+    #     cv2.imwrite(f"debug/CORNER_{corner_name}.jpg", corner_img)
+
     
     best_score = -1
     best_corner = None
@@ -209,7 +218,7 @@ def find_orientation(image):
     
     result_img = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
     if best_match_loc:
-        cv2.circle(result_img, best_match_loc, 40, (0, 0, 255), -1)
+        cv2.circle(result_img, best_match_loc, 50, (0, 0, 255), -1)
         
     return best_corner, result_img
 
@@ -905,12 +914,12 @@ if __name__ == "__main__":
         'hough_lines_rectified': False,
         'filtered_intersections': False,
         'pieces': False,
-        'horse': False,
-        'rotated': True,
+        'horse': True,
+        'rotated': False,
     }
 
-    #process_all_images(output_dir, output_config, eval_predictions=False)
-    process_input(output_dir, output_config, eval_predictions=False)
+    process_all_images(output_dir, output_config, eval_predictions=False)
+    #process_input(output_dir, output_config, eval_predictions=False)
     for key,value in output_config.items():
         if value:
             stitch_images(output_dir, image_type=key)
