@@ -150,6 +150,76 @@ def convex_hull_intersection(poly1, poly2):
 
     return poly1
 
+##==================================== Horse ====================================================##
+
+def find_orientation(image):
+    horse_path = "figures/horse.png"
+    horse_img = cv2.imread(horse_path, cv2.IMREAD_GRAYSCALE)
+    
+    if horse_img is None:
+        print("Could not load the horse template image")
+        return None
+        
+    # Create copies of the horse template rotated to match each corner orientation
+    horse_templates = []
+    horse_templates.append(("top_left", horse_img))  # Original orientation
+    horse_templates.append(("top_right", cv2.rotate(horse_img, cv2.ROTATE_90_CLOCKWISE)))  
+    horse_templates.append(("bottom_right", cv2.rotate(horse_img, cv2.ROTATE_180)))
+    horse_templates.append(("bottom_left", cv2.rotate(horse_img, cv2.ROTATE_90_COUNTERCLOCKWISE)))
+    
+    # Define regions of interest for each corner
+    height, width = image.shape
+    corner_size = min(width, height) // 4  # Use 1/4 of the image width/height for corner detection
+    
+    corners = {
+        "top_left": image[:corner_size, :corner_size],
+        "top_right": image[:corner_size, width-corner_size:],
+        "bottom_left": image[height-corner_size:, :corner_size],
+        "bottom_right": image[height-corner_size:, width-corner_size:]
+    }
+    
+    best_score = -1
+    best_corner = None
+    best_match_loc = None
+    
+    # Try each template against each corner
+    for corner_name, corner_img in corners.items():
+        for template_name, template in horse_templates:
+            # Resize template to match approximately 1/5 of the corner size
+            target_size = corner_size // 5
+            resized_template = cv2.resize(template, (target_size, target_size))
+            
+            # Make sure corner is larger than template
+            if corner_img.shape[0] < resized_template.shape[0] or corner_img.shape[1] < resized_template.shape[1]:
+                continue
+                
+            # Use template matching to find horse in corner
+            result = cv2.matchTemplate(corner_img, resized_template, cv2.TM_CCOEFF_NORMED)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+            
+            # If this is the best match so far, remember it
+            if max_val > best_score:
+                best_score = max_val
+                best_corner = corner_name
+                
+                # Convert max_loc from corner coordinates to full image coordinates
+                if corner_name == "top_left":
+                    match_x, match_y = max_loc
+                elif corner_name == "top_right":
+                    match_x, match_y = width - corner_size + max_loc[0], max_loc[1]
+                elif corner_name == "bottom_left":
+                    match_x, match_y = max_loc[0], height - corner_size + max_loc[1]
+                elif corner_name == "bottom_right":
+                    match_x, match_y = width - corner_size + max_loc[0], height - corner_size + max_loc[1]
+                    
+                best_match_loc = (match_x, match_y)
+    
+    result_img = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    if best_match_loc:
+        cv2.circle(result_img, best_match_loc, 40, (0, 0, 255), -1)
+        
+    return best_corner, result_img
+
 ##==================================== Square and Piece Detection Helpers ====================================================##
 
 def filter_and_rectify_hough_lines(lines, image_shape, angle_threshold=10, distance_threshold=20):
@@ -447,12 +517,13 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     )
 
     # Apply the warp matrix to the image
-    warped_img = cv2.warpPerspective(img, warp_matrix, (img.shape[1], img.shape[0]))
+    warped_gray_img = cv2.warpPerspective(img, warp_matrix, (img.shape[1], img.shape[0]))
 
+    horse_corner, horse_img = find_orientation(warped_gray_img)
 
     # CLAHE
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    clahe_img = clahe.apply(warped_img)
+    clahe_img = clahe.apply(warped_gray_img)
 
     # Gaussian Blur
     blurred_warped = cv2.GaussianBlur(clahe_img, (7, 7), 0)
@@ -470,7 +541,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     )
 
     # Draw lines on the original image
-    hough_lines_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
+    hough_lines_img = cv2.cvtColor(warped_gray_img, cv2.COLOR_GRAY2BGR)
     if lines is not None:
         for line in lines:
             x1, y1, x2, y2 = line[0]
@@ -489,8 +560,8 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
         rectified_verticals = [(x, 0, x, img.shape[0]) for x in verticals]
         rectified_horizontals = [(0, y, img.shape[1], y) for y in horizontals]
         
-        hough_lines_rectified_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
-        filtered_intersections_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
+        hough_lines_rectified_img = cv2.cvtColor(warped_gray_img, cv2.COLOR_GRAY2BGR)
+        filtered_intersections_img = cv2.cvtColor(warped_gray_img, cv2.COLOR_GRAY2BGR)
         
         # vertical lines
         for x, y0, x2, y2 in rectified_verticals:
@@ -504,7 +575,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
         for point in intersections:
             cv2.circle(hough_lines_rectified_img, point, 25, (0, 0, 255), -1)
         
-        x_center, y_center = warped_img.shape[1] // 2, warped_img.shape[0] // 2
+        x_center, y_center = warped_gray_img.shape[1] // 2, warped_gray_img.shape[0] // 2
 
         filtered_intersections, square_side = filter_intersections_by_distance(intersections, (x_center, y_center))
         for point in filtered_intersections:
@@ -526,7 +597,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     
     board = [[0] * cols for _ in range(rows)] if rows > 0 and cols > 0 else [[0]]
 
-    pieces_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
+    pieces_img = cv2.cvtColor(warped_gray_img, cv2.COLOR_GRAY2BGR)
     
     for i in range(rows):
         for j in range(cols):
@@ -538,7 +609,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
                     filtered_intersections[(i + 1) * step + j],
                 ]
 
-                if has_piece(warped_img, square_corners):
+                if has_piece(warped_gray_img, square_corners):
                     board[i][j] = 1
                     cv2.polylines(pieces_img, [np.array(square_corners)], True, (0, 0, 255), 10)
 
@@ -551,7 +622,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
             ("original", lambda: img),
             ("corners", lambda: points_img),
             ("threshold", lambda: th_global),
-            ("warped", lambda: warped_img),
+            ("warped", lambda: warped_gray_img),
             *base_img_contour_images,
             *threshold_contour_images,
             ('clahe', lambda: clahe_img),
@@ -562,6 +633,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
             ('hough_lines_rectified', lambda: hough_lines_rectified_img),
             ('filtered_intersections', lambda: filtered_intersections_img),
             ('pieces', lambda: pieces_img),
+            ('horse', lambda: horse_img),
         ]
 
         for output_type, get_image in output_handlers:
@@ -584,6 +656,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
         "board": board,
         "detected_pieces": [],
         "num_pieces": sum([sum(row) for row in board]),
+        "horse_corner": horse_corner,
     }
 
     print(f"Processed {base_filename}")
@@ -710,6 +783,7 @@ def process_input(output_dir, output_config, eval_predictions: bool = True):
             "num_pieces": predictions['num_pieces'],
             "board": predictions['board'],
             "detected_pieces": predictions['detected_pieces'],
+            "horse_corner": predictions['horse_corner'],
         })
         if eval_predictions:
             image_annotations = get_annotations_by_image_name(image, dataset)
@@ -728,7 +802,7 @@ def process_input(output_dir, output_config, eval_predictions: bool = True):
     print("Output JSON file created.")
 
 
-def stitch_images(output_dir, image_type='warped',  grid_size=(7,8), output_filename=None):
+def stitch_images(output_dir, image_type='warped',  grid_size=None, output_filename=None):
     target_images = []
     for root, dirs, files in os.walk(output_dir):
         for file in files:
@@ -825,10 +899,14 @@ if __name__ == "__main__":
         'dilated': False,
         'hough_lines': False,
         'hough_lines_rectified': False,
-        'filtered_intersections': True,
+        'filtered_intersections': False,
         'pieces': False,
+        'horse': True,
     }
 
     process_all_images(output_dir, output_config, eval_predictions=False)
     #process_input(output_dir, output_config, eval_predictions=False)
-    stitch_images(output_dir, image_type='filtered_intersections')
+    for key,value in output_config.items():
+        if value:
+            stitch_images(output_dir, image_type=key)
+
