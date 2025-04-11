@@ -160,16 +160,14 @@ def find_orientation(image):
         print("Could not load the horse template image")
         return None
         
-    # Create copies of the horse template rotated to match each corner orientation
     horse_templates = []
     horse_templates.append(("top_left", horse_img))  # Original orientation
     horse_templates.append(("top_right", cv2.rotate(horse_img, cv2.ROTATE_90_CLOCKWISE)))  
     horse_templates.append(("bottom_right", cv2.rotate(horse_img, cv2.ROTATE_180)))
     horse_templates.append(("bottom_left", cv2.rotate(horse_img, cv2.ROTATE_90_COUNTERCLOCKWISE)))
     
-    # Define regions of interest for each corner
     height, width = image.shape
-    corner_size = min(width, height) // 4  # Use 1/4 of the image width/height for corner detection
+    corner_size = min(width, height) // 4
     
     corners = {
         "top_left": image[:corner_size, :corner_size],
@@ -182,27 +180,22 @@ def find_orientation(image):
     best_corner = None
     best_match_loc = None
     
-    # Try each template against each corner
+
     for corner_name, corner_img in corners.items():
         for template_name, template in horse_templates:
-            # Resize template to match approximately 1/5 of the corner size
             target_size = corner_size // 5
             resized_template = cv2.resize(template, (target_size, target_size))
             
-            # Make sure corner is larger than template
             if corner_img.shape[0] < resized_template.shape[0] or corner_img.shape[1] < resized_template.shape[1]:
                 continue
                 
-            # Use template matching to find horse in corner
             result = cv2.matchTemplate(corner_img, resized_template, cv2.TM_CCOEFF_NORMED)
             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
             
-            # If this is the best match so far, remember it
             if max_val > best_score:
                 best_score = max_val
                 best_corner = corner_name
                 
-                # Convert max_loc from corner coordinates to full image coordinates
                 if corner_name == "top_left":
                     match_x, match_y = max_loc
                 elif corner_name == "top_right":
@@ -518,8 +511,18 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
 
     # Apply the warp matrix to the image
     warped_gray_img = cv2.warpPerspective(img, warp_matrix, (img.shape[1], img.shape[0]))
+    warped_color_img = cv2.warpPerspective(img_color, warp_matrix, (img.shape[1], img.shape[0]))
 
     horse_corner, horse_img = find_orientation(warped_gray_img)
+
+    # Rotate image according to the horse corner (bottom-left)
+    rotated_img = warped_gray_img.copy()
+    if horse_corner == "top_left":
+        rotated_img = cv2.rotate(rotated_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    elif horse_corner == "top_right":
+        rotated_img = cv2.rotate(rotated_img, cv2.ROTATE_180)
+    elif horse_corner == "bottom_right":
+        rotated_img = cv2.rotate(rotated_img, cv2.ROTATE_90_CLOCKWISE)
 
     # CLAHE
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -634,6 +637,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
             ('filtered_intersections', lambda: filtered_intersections_img),
             ('pieces', lambda: pieces_img),
             ('horse', lambda: horse_img),
+            ('rotated', lambda: rotated_img),
         ]
 
         for output_type, get_image in output_handlers:
@@ -901,11 +905,12 @@ if __name__ == "__main__":
         'hough_lines_rectified': False,
         'filtered_intersections': False,
         'pieces': False,
-        'horse': True,
+        'horse': False,
+        'rotated': True,
     }
 
-    process_all_images(output_dir, output_config, eval_predictions=False)
-    #process_input(output_dir, output_config, eval_predictions=False)
+    #process_all_images(output_dir, output_config, eval_predictions=False)
+    process_input(output_dir, output_config, eval_predictions=False)
     for key,value in output_config.items():
         if value:
             stitch_images(output_dir, image_type=key)
