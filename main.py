@@ -853,6 +853,10 @@ def stitch_images(output_dir, image_type='warped',  grid_size=None, output_filen
         x_offset = col * max_width
         
         canvas[y_offset:y_offset + max_height, x_offset:x_offset + max_width] = resized_img
+
+    # reduce image by 50%
+    scale_factor = 0.5
+    canvas = cv2.resize(canvas, (int(canvas.shape[1] * scale_factor), int(canvas.shape[0] * scale_factor)))
     
     output_path = os.path.join(output_dir, output_filename)
     cv2.imwrite(output_path, canvas)
