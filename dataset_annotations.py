@@ -243,25 +243,58 @@ def evaluate_bboxes(true_bboxes, pred_bboxes, verbose: bool = False):
             matches.append((true_idx, best_pred_idx, best_iou))
             used_pred_indices.add(best_pred_idx)
 
-    true_positives = len(matches)
-    false_positives = len(pred_bboxes) - true_positives
-    false_negatives = len(true_bboxes) - true_positives
+    tp = len(matches)
+    fp = len(pred_bboxes) - tp
+    fn = len(true_bboxes) - tp
 
-    precision = true_positives / (true_positives + false_positives + 1e-8)
-    recall = true_positives / (true_positives + false_negatives + 1e-8)
-    f1_score = 2 * precision * recall / (precision + recall + 1e-8)
+    precision = tp / (tp + fp + 1e-8)
+    recall = tp / (tp + fn + 1e-8)
+    f1 = 2 * precision * recall / (precision + recall + 1e-8)
 
     if verbose:
+        print("Bounding box statistics:")
         print("Matches (true_idx, pred_idx, iou):")
         for match in matches:
             print(f"- {match}")
         print()
         print(f"Precision: {precision:.2f}")
         print(f"Recall:    {recall:.2f}")
-        print(f"F1 Score:  {f1_score:.2f}")
-        print(f"TP: {true_positives}, FP: {false_positives}, FN: {false_negatives}")
+        print(f"F1 Score:  {f1:.2f}")
+        print(f"TP: {tp}, FP: {fp}, FN: {fn}")
 
-    return f1_score
+    return f1
+
+def evaluate_board(true_board, pred_board, verbose: bool = False):
+    if len(pred_board) != 8 or len(pred_board[0]) != 8:
+        return 0
+
+    tp = fp = fn = tn = 0
+    for row in range(8):
+        for col in range(8):
+            t = true_board[row][col]
+            p = pred_board[row][col]
+
+            if t == 1 and p == 1:
+                tp += 1
+            elif t == 0 and p == 1:
+                fp += 1
+            elif t == 1 and p == 0:
+                fn += 1
+            elif t == 0 and p == 0:
+                tn += 1
+
+    precision = tp / (tp + fp + 1e-8)
+    recall = tp / (tp + fn + 1e-8)
+    f1 = 2 * precision * recall / (precision + recall + 1e-8)
+
+    if verbose:
+        print("Board positions statistics:")
+        print(f"Precision: {precision:.2f}")
+        print(f"Recall:    {recall:.2f}")
+        print(f"F1 Score:  {f1:.2f}")
+        print(f"TP: {tp}, FP: {fp}, FN: {fn}, TN: {tn}")
+
+    return f1
 
 
 def evaluate_predictions(
@@ -282,7 +315,7 @@ def evaluate_predictions(
     pred_bboxs = predictions["detected_pieces"]
 
     num_pieces_diff = 0
-    board_diff = 0
+    board_score = 0
     corners_mse = 0
     bbox_scores = 0
     if eval_num_pieces:
@@ -299,13 +332,9 @@ def evaluate_predictions(
 
     if eval_board:
         # Eval the board
-        board_diff = 0
-        for i in range(8):
-            for j in range(8):
-                if true_board[i][j] != pred_board[i][j]:
-                    board_diff += 1
+        board_score = evaluate_board(true_board, pred_board)
         if verbose:
-            print(f"Board diff: {board_diff}")
+            print(f"Board score: {board_score:.2f}")
 
     if eval_corners:
         # Eval the corners
@@ -315,7 +344,7 @@ def evaluate_predictions(
 
     return {
         "num_pieces": num_pieces_diff,
-        "board": board_diff,
+        "board": board_score,
         "corners": corners_mse,
         "bboxes": bbox_scores,
     }

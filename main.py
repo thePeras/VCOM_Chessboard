@@ -345,8 +345,27 @@ def find_orientation(image):
                 best_rotation = cv2.ROTATE_90_CLOCKWISE
                 
             best_match_loc = (match_x, match_y)
-        
+
     return best_rotation, best_match_loc
+
+##==================================== Given chessboard orientation, rotate board ===============================================##
+def _rotate_90_cw(board):
+    return [list(reversed(col)) for col in zip(*board)]
+
+def adjust_board(board, rotation):
+    # Need to initially adjust board since we represent it differently than in the dataset label
+    adjusted_board = _rotate_90_cw(board)
+
+    iters = 0
+    if rotation == cv2.ROTATE_90_CLOCKWISE:
+        iters = 1
+    elif rotation == cv2.ROTATE_180:
+        iters = 2
+    elif rotation == cv2.ROTATE_90_COUNTERCLOCKWISE:
+        iters = 3
+    for _ in range(iters):
+        adjusted_board = _rotate_90_cw(adjusted_board)
+    return adjusted_board
 
 ##==================================== Square and Piece Detection Helpers ====================================================##
 
@@ -702,9 +721,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
         ),
     )
 
-    # Apply the warp matrix to the image
-    # warped_img = cv2.warpPerspective(img, warp_matrix, (img.shape[1], img.shape[0]))
-    
+    # Apply the warp matrix to the image    
     warped_gray_img = cv2.warpPerspective(img, warp_matrix, (img.shape[1], img.shape[0]))
     warped_color_img = cv2.warpPerspective(img_color, warp_matrix, (img.shape[1], img.shape[0]))
 
@@ -791,7 +808,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
         step = grid_side + 1
         print(f"Using a {rows}x{cols} grid with {len(filtered_intersections)} intersections")
     
-    board = [[0] * cols for _ in range(rows)] if rows > 0 and cols > 0 else [[0]]
+    board = [[0] * cols for _ in range(rows)] if rows > 0 and cols > 0 else [[0] * 8]
 
     pieces_img = warped_color_img.copy()
     pieces_img_gc = warped_color_img.copy()
@@ -970,6 +987,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
                     image,
                 )
 
+    adjusted_board = adjust_board(board, image_rotation)
     predictions = {
         "image": image_path,
         "corners": {
@@ -978,7 +996,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
             "top_left": top_left,
             "top_right": top_right,
         },
-        "board": board,
+        "board": adjusted_board,
         "detected_pieces": bboxes_ans,
         "num_pieces": sum([sum(row) for row in board]),
     }
@@ -1038,7 +1056,7 @@ def process_all_images(
                     evaluations = evaluate_predictions(
                         image_annotations,
                         predictions,
-                        eval_board=False,
+                        eval_board=True,
                         eval_num_pieces=False,
                         eval_corners=False,
                         eval_bboxes=True,
@@ -1071,11 +1089,11 @@ def process_all_images(
         evaluations["clickable_image_path"] = evaluations["image_path"].apply(
             lambda x: os.path.splitext(os.path.basename(x))[0]
         )
-        by_bboxes = evaluations
-        by_bboxes = by_bboxes.sort_values(by="bboxes", ascending=False)
+        sorted_evals = evaluations  # apply a filter if desired
+        sorted_evals = sorted_evals.sort_values(by="board", ascending=False)
 
         if show_all_images and output_config.get("corners", False):
-            for image_path in by_bboxes["clickable_image_path"]:
+            for image_path in sorted_evals["clickable_image_path"]:
                 cv2.imshow(
                     image_path,
                     cv2.resize(
@@ -1086,9 +1104,10 @@ def process_all_images(
                 cv2.waitKey(0)
                 cv2.destroyAllWindows()
 
-        print(f"Possible bad corners count: {len(by_bboxes)}")
-        print(by_bboxes)
-        print(f"Mean of the bounding box score results: '{by_bboxes["bboxes"].mean():.4f}'")
+        print(f"Possible bad corners count: {len(sorted_evals)}")
+        print(sorted_evals)
+        print(f"Mean of the bounding box score results: '{sorted_evals["bboxes"].mean():.4f}'")
+        print(f"Mean of the board score results: '{sorted_evals["board"].mean():.4f}'")
 
     with open("output.json", "w") as f:
         json.dump(output, f, indent=4)
@@ -1125,7 +1144,7 @@ def process_input(output_dir, output_config, eval_predictions: bool = True):
             evaluations = evaluate_predictions(
                 image_annotations,
                 predictions,
-                eval_board=False,
+                eval_board=True,
                 eval_num_pieces=False,
                 eval_corners=False,
                 eval_bboxes=True,
@@ -1243,18 +1262,18 @@ if __name__ == "__main__":
         'hough_lines': False,
         'hough_lines_rectified': False,
         'filtered_intersections': False,
-        'pieces_gc': True,
-        'grabcut_mask': True,
-        'grabcut_fg_ratios': True,
-        'grabcut_hint_mask': True,
-        'white_pieces_mask': True,
+        'pieces_gc': False,
+        'grabcut_mask': False,
+        'grabcut_fg_ratios': False,
+        'grabcut_hint_mask': False,
+        'white_pieces_mask': False,
         'white_pieces_mask_morph': True,
         'piece_contours': True,
         'bboxes': True,
-        "hue_mask": True,
-        "sat_mask": True,
-        "val_mask": True,
-        'otsu_mask': True,
+        "hue_mask": False,
+        "sat_mask": False,
+        "val_mask": False,
+        'otsu_mask': False,
         'bboxes_orig': True,
         'pieces': True,
         'horse': True,
