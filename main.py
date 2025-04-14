@@ -1256,7 +1256,7 @@ if __name__ == "__main__":
         "val_mask": True,
         'otsu_mask': True,
         'bboxes_orig': True,
-        'pieces': False,
+        'pieces': True,
         'horse': True,
         'rotated': True,
     }
@@ -1269,19 +1269,6 @@ if __name__ == "__main__":
 
     process_all_images(output_dir, output_config, eval_predictions=True)
     # process_input(output_dir, output_config, eval_predictions=True)
-
-    # stitch_images(output_dir, image_type='warped_color')
-    # stitch_images(output_dir, image_type="black_pieces")
-    # stitch_images(output_dir, image_type="white_pieces_mask")
-    # stitch_images(output_dir, image_type="white_pieces_mask_morph")
-    # stitch_images(output_dir, image_type="grabcut_hint_mask")
-    # stitch_images(output_dir, image_type="grabcut_fg_ratios")
-    # stitch_images(output_dir, image_type="grabcut_mask")
-    # stitch_images(output_dir, image_type="otsu_mask")
-    # stitch_images(output_dir, image_type="kmeans_mask")
-    # stitch_images(output_dir, image_type='piece_contours')
-    # stitch_images(output_dir, image_type='bboxes')
-    # stitch_images(output_dir, image_type='bboxes_orig')
 
     for key, value in output_config.items():
         if value:
