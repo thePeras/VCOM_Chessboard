@@ -294,6 +294,60 @@ def has_piece_grabcut(resized_img, original_corners, original_size, resized_size
 
     return has_piece, largest_contour, hint_overall_mask_color, overall_mask * 255, foreground_ratio, overall_otsu_color
 
+##==================================== Horse to detect the chessboard orientation ================================================##
+
+def find_orientation(image):
+    horse_path = "figures/horse.png"
+    horse_img = cv2.imread(horse_path, cv2.IMREAD_GRAYSCALE)
+    
+    if horse_img is None:
+        print("Could not load the horse template image")
+        return None
+
+    height, width = image.shape
+    corner_size = min(width, height) // 4
+    
+    orientations = {
+        "top_left": (image[:corner_size, :corner_size], cv2.rotate(horse_img, cv2.ROTATE_90_CLOCKWISE)),
+        "top_right": (image[:corner_size, width-corner_size:], cv2.rotate(horse_img, cv2.ROTATE_180)),
+        "bottom_left": (image[height-corner_size:, :corner_size], horse_img),
+        "bottom_right": (image[height-corner_size:, width-corner_size:], cv2.rotate(horse_img, cv2.ROTATE_90_COUNTERCLOCKWISE)),
+    }
+    
+    best_score = -1
+    best_match_loc = None
+    best_rotation = None
+    
+    for corner_name, (corner_img, horse_template) in orientations.items():
+        target_size = corner_size // 4
+        resized_template = cv2.resize(horse_template, (target_size, target_size))
+        
+        if corner_img.shape[0] < resized_template.shape[0] or corner_img.shape[1] < resized_template.shape[1]:
+            continue
+            
+        result = cv2.matchTemplate(corner_img, resized_template, cv2.TM_CCOEFF_NORMED)
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+        
+        if max_val > best_score:
+            best_score = max_val
+            
+            if corner_name == "top_left":
+                match_x, match_y = max_loc
+                best_rotation = cv2.ROTATE_90_COUNTERCLOCKWISE
+            elif corner_name == "top_right":
+                match_x, match_y = width - corner_size + max_loc[0], max_loc[1]
+                best_rotation = cv2.ROTATE_180
+            elif corner_name == "bottom_left":
+                match_x, match_y = max_loc[0], height - corner_size + max_loc[1]
+                best_rotation = None
+            elif corner_name == "bottom_right":
+                match_x, match_y = width - corner_size + max_loc[0], height - corner_size + max_loc[1]
+                best_rotation = cv2.ROTATE_90_CLOCKWISE
+                
+            best_match_loc = (match_x, match_y)
+        
+    return best_rotation, best_match_loc
+
 ##==================================== Square and Piece Detection Helpers ====================================================##
 
 def filter_and_rectify_hough_lines(lines, image_shape, angle_threshold=10, distance_threshold=20):
@@ -649,12 +703,23 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     )
 
     # Apply the warp matrix to the image
-    warped_img = cv2.warpPerspective(img, warp_matrix, (img.shape[1], img.shape[0]))
-    warped_img_color = cv2.warpPerspective(img_color, warp_matrix, (img.shape[1], img.shape[0]))
+    # warped_img = cv2.warpPerspective(img, warp_matrix, (img.shape[1], img.shape[0]))
+    
+    warped_gray_img = cv2.warpPerspective(img, warp_matrix, (img.shape[1], img.shape[0]))
+    warped_color_img = cv2.warpPerspective(img_color, warp_matrix, (img.shape[1], img.shape[0]))
+
+    image_rotation, horse_location = find_orientation(warped_gray_img)
+    if image_rotation is not None:
+        rotated_img = cv2.rotate(warped_gray_img, image_rotation)
+    else:
+        rotated_img = warped_gray_img.copy()
+    
+    horse_img = cv2.cvtColor(warped_gray_img, cv2.COLOR_GRAY2BGR)
+    cv2.circle(horse_img, horse_location, 50, (0, 0, 255), -1)
 
     # CLAHE
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    clahe_img = clahe.apply(warped_img)
+    clahe_img = clahe.apply(warped_gray_img)
 
     # Gaussian Blur
     blurred_warped = cv2.GaussianBlur(clahe_img, (7, 7), 0)
@@ -672,7 +737,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     )
 
     # Draw lines on the original image
-    hough_lines_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
+    hough_lines_img = cv2.cvtColor(warped_gray_img, cv2.COLOR_GRAY2BGR)
     if lines is not None:
         for line in lines:
             x1, y1, x2, y2 = line[0]
@@ -691,8 +756,8 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
         rectified_verticals = [(x, 0, x, img.shape[0]) for x in verticals]
         rectified_horizontals = [(0, y, img.shape[1], y) for y in horizontals]
         
-        hough_lines_rectified_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
-        filtered_intersections_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
+        hough_lines_rectified_img = cv2.cvtColor(warped_gray_img, cv2.COLOR_GRAY2BGR)
+        filtered_intersections_img = cv2.cvtColor(warped_gray_img, cv2.COLOR_GRAY2BGR)
         
         # vertical lines
         for x, y0, x2, y2 in rectified_verticals:
@@ -706,7 +771,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
         for point in intersections:
             cv2.circle(hough_lines_rectified_img, point, 25, (0, 0, 255), -1)
         
-        x_center, y_center = warped_img.shape[1] // 2, warped_img.shape[0] // 2
+        x_center, y_center = warped_gray_img.shape[1] // 2, warped_gray_img.shape[0] // 2
 
         filtered_intersections, square_side = filter_intersections_by_distance(intersections, (x_center, y_center))
         for point in filtered_intersections:
@@ -728,15 +793,15 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     
     board = [[0] * cols for _ in range(rows)] if rows > 0 and cols > 0 else [[0]]
 
-    # pieces_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
-    pieces_img = warped_img_color.copy()
-    warped_img_color_blurred = cv2.GaussianBlur(warped_img_color, (5, 5), 0)
+    pieces_img = warped_color_img.copy()
+    pieces_img_gc = warped_color_img.copy()
+    warped_img_color_blurred = cv2.GaussianBlur(warped_color_img, (5, 5), 0)
     # warped_img_color_blurred_resized = cv2.resize(warped_img_color_blurred, (800, 800))
 
     final_mask = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
     foreground_ratios = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
-    gc_hint_mask_color = np.zeros_like(warped_img_color, dtype=np.uint8)
-    otsu_mask = np.zeros_like(warped_img_color, dtype=np.uint8)
+    gc_hint_mask_color = np.zeros_like(warped_color_img, dtype=np.uint8)
+    otsu_mask = np.zeros_like(warped_color_img, dtype=np.uint8)
     for i in range(rows):
         for j in range(cols):
             if (i+1) * step + j + 1 < len(filtered_intersections):
@@ -769,17 +834,17 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
                 #     contour_bbox = cv2.boundingRect(contour)
                 #     # Draw the bounding rectangle on the pieces image.
                 #     x, y, w, h = contour_bbox
-                #     cv2.polylines(pieces_img, [np.array([
+                #     cv2.polylines(pieces_img_gc, [np.array([
                 #         [x, y],
                 #         [x + w, y],
                 #         [x + w, y + h],
                 #         [x, y + h]
                 #     ])], True, (0, 0, 255), 10)
 
-                #     cv2.polylines(pieces_img, [np.array(square_corners)], True, (0, 255, 0), 10)
+                #     cv2.polylines(pieces_img_gc, [np.array(square_corners)], True, (0, 255, 0), 10)
                 #     cv2.polylines(foreground_ratios, [np.array(square_corners)], True, 255, 10)
 
-                if has_piece(warped_img, square_corners):
+                if has_piece(warped_gray_img, square_corners):
                     board[i][j] = 1
                     cv2.polylines(pieces_img, [np.array(square_corners)], True, (0, 0, 255), 10)
 
@@ -830,8 +895,8 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     s_mask = np.uint8(s_mask) * 255
     v_mask = np.uint8(v_mask) * 255
 
-    piece_contours = warped_img_color.copy()
-    bboxes_img = warped_img_color.copy()
+    piece_contours = warped_color_img.copy()
+    bboxes_img = warped_color_img.copy()
     original_bboxes_image = img_color.copy()
 
     # find contours in white mask
@@ -866,7 +931,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
             ("original", lambda: img),
             ("corners", lambda: points_img),
             ("threshold", lambda: th_global),
-            ("warped", lambda: warped_img),
+            ("warped", lambda: warped_gray_img),
             *base_img_contour_images,
             *threshold_contour_images,
             ('clahe', lambda: clahe_img),
@@ -876,12 +941,12 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
             ('hough_lines', lambda: hough_lines_img),
             ('hough_lines_rectified', lambda: hough_lines_rectified_img),
             ('filtered_intersections', lambda: filtered_intersections_img),
-            ('pieces_gc', lambda: pieces_img),
-            ('warped_color', lambda: warped_img_color),
+            ('pieces_gc', lambda: pieces_img_gc),
+            ('warped_color', lambda: warped_color_img),
             ('grabcut_mask', lambda: final_mask),
             ('grabcut_fg_ratios', lambda: foreground_ratios),
             ('grabcut_hint_mask', lambda: gc_hint_mask_color),
-            ('black_pieces', lambda: black_mask),
+            ('pieces_black', lambda: black_mask),
             ('white_pieces_mask', lambda: white_mask),
             ('white_pieces_mask_morph', lambda: morphological_op_white_mask),
             ('bboxes', lambda: bboxes_img),
@@ -891,6 +956,9 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
             ('val_mask', lambda: v_mask),
             ('otsu_mask', lambda: otsu_mask),
             ('bboxes_orig', lambda: original_bboxes_image),
+            ('pieces', lambda: pieces_img),
+            ('horse', lambda: horse_img),
+            ('rotated', lambda: rotated_img),
         ]
 
         for output_type, get_image in output_handlers:
@@ -1020,7 +1088,7 @@ def process_all_images(
 
         print(f"Possible bad corners count: {len(by_bboxes)}")
         print(by_bboxes)
-        print(by_bboxes["bboxes"].mean())
+        print(f"Mean of the bounding box score results: '{by_bboxes["bboxes"].mean():.4f}'")
 
     with open("output.json", "w") as f:
         json.dump(output, f, indent=4)
@@ -1071,7 +1139,7 @@ def process_input(output_dir, output_config, eval_predictions: bool = True):
     print("Output JSON file created.")
 
 
-def stitch_images(output_dir, image_type='warped',  grid_size=(7,8), output_filename=None):
+def stitch_images(output_dir, image_type='warped',  grid_size=None, output_filename=None):
     target_images = []
     for root, dirs, files in os.walk(output_dir):
         for file in files:
@@ -1131,6 +1199,10 @@ def stitch_images(output_dir, image_type='warped',  grid_size=(7,8), output_file
         x_offset = col * max_width
         
         canvas[y_offset:y_offset + max_height, x_offset:x_offset + max_width] = resized_img
+
+    # reduce image by 50%
+    scale_factor = 0.5
+    canvas = cv2.resize(canvas, (int(canvas.shape[1] * scale_factor), int(canvas.shape[0] * scale_factor)))
     
     output_path = os.path.join(output_dir, output_filename)
     canvas = cv2.resize(canvas, (3000, 3000))   # Resize canvas to 3000x3000 (otherwise it is too large)
@@ -1177,17 +1249,16 @@ if __name__ == "__main__":
         'grabcut_hint_mask': True,
         'white_pieces_mask': True,
         'white_pieces_mask_morph': True,
-        'black_pieces': True,
         'piece_contours': True,
         'bboxes': True,
         "hue_mask": True,
         "sat_mask": True,
         "val_mask": True,
-        'dominant': True,
-        'segmented_0': True,
-        'segmented_1': True,
         'otsu_mask': True,
         'bboxes_orig': True,
+        'pieces': False,
+        'horse': True,
+        'rotated': True,
     }
     for config in output_config:
         for other_config in output_config:
@@ -1199,15 +1270,20 @@ if __name__ == "__main__":
     process_all_images(output_dir, output_config, eval_predictions=True)
     # process_input(output_dir, output_config, eval_predictions=True)
 
-    stitch_images(output_dir, image_type='warped_color')
-    stitch_images(output_dir, image_type="black_pieces")
-    stitch_images(output_dir, image_type="white_pieces_mask")
-    stitch_images(output_dir, image_type="white_pieces_mask_morph")
-    stitch_images(output_dir, image_type="grabcut_hint_mask")
-    stitch_images(output_dir, image_type="grabcut_fg_ratios")
-    stitch_images(output_dir, image_type="grabcut_mask")
-    stitch_images(output_dir, image_type="otsu_mask")
-    stitch_images(output_dir, image_type="kmeans_mask")
-    stitch_images(output_dir, image_type='piece_contours')
-    stitch_images(output_dir, image_type='bboxes')
-    stitch_images(output_dir, image_type='bboxes_orig')
+    # stitch_images(output_dir, image_type='warped_color')
+    # stitch_images(output_dir, image_type="black_pieces")
+    # stitch_images(output_dir, image_type="white_pieces_mask")
+    # stitch_images(output_dir, image_type="white_pieces_mask_morph")
+    # stitch_images(output_dir, image_type="grabcut_hint_mask")
+    # stitch_images(output_dir, image_type="grabcut_fg_ratios")
+    # stitch_images(output_dir, image_type="grabcut_mask")
+    # stitch_images(output_dir, image_type="otsu_mask")
+    # stitch_images(output_dir, image_type="kmeans_mask")
+    # stitch_images(output_dir, image_type='piece_contours')
+    # stitch_images(output_dir, image_type='bboxes')
+    # stitch_images(output_dir, image_type='bboxes_orig')
+
+    for key, value in output_config.items():
+        if value:
+            stitch_images(output_dir, image_type=key)
+

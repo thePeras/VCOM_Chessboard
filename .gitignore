@@ -182,4 +182,5 @@ complete_dataset/*
 
 input.json
 output.json
+debug/
 .vscode
