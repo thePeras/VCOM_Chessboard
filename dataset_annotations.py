@@ -61,7 +61,9 @@ def get_image_id_by_name(image_name, dataset):
     for image in dataset["images"]:
         if image["file_name"] == image_name:
             return image["id"]
-    return None
+    raise ValueError(
+        f"""Could not find image id with name {image_name}.
+        Likely, there has been an error related to the image name.""")
 
 def get_annotations_by_image_name(image_name, dataset):
     """
@@ -199,33 +201,104 @@ def evaluate_corners(true_corners, pred_corners, verbose: bool = False):
     return min_corners_mse
 
 
+def evaluate_bboxes(true_bboxes, pred_bboxes, verbose: bool = False):
+    def area(bbox):
+        return (bbox["xmax"] - bbox["xmin"]) * (bbox["ymax"] - bbox["ymin"])
+
+    def iou(box_a, box_b):
+        # box = (xmin, ymin, xmax, ymax)
+        x_a = max(box_a["xmin"], box_b["xmin"])
+        y_a = max(box_a["ymin"], box_b["ymin"])
+        x_b = min(box_a["xmax"], box_b["xmax"])
+        y_b = min(box_a["ymax"], box_b["ymax"])
+
+        inter_area = max(0, x_b - x_a) * max(0, y_b - y_a)
+        if inter_area == 0:
+            return 0.0
+
+        area_a = area(box_a)
+        area_b = area(box_b)
+        union_area = area_a + area_b - inter_area
+
+        return inter_area / union_area
+
+    matches = []
+    iou_threshold = 0.5
+    used_pred_indices = set()
+
+    for true_idx, true_box in enumerate(true_bboxes):
+        best_iou = 0
+        best_pred_idx = -1
+
+        for pred_idx, pred_box in enumerate(pred_bboxes):
+            if pred_idx in used_pred_indices:
+                continue
+
+            current_iou = iou(true_box, pred_box)
+            if current_iou > best_iou:
+                best_iou = current_iou
+                best_pred_idx = pred_idx
+
+        if best_iou >= iou_threshold:
+            matches.append((true_idx, best_pred_idx, best_iou))
+            used_pred_indices.add(best_pred_idx)
+
+    true_positives = len(matches)
+    false_positives = len(pred_bboxes) - true_positives
+    false_negatives = len(true_bboxes) - true_positives
+
+    precision = true_positives / (true_positives + false_positives + 1e-8)
+    recall = true_positives / (true_positives + false_negatives + 1e-8)
+    f1_score = 2 * precision * recall / (precision + recall + 1e-8)
+
+    if verbose:
+        print("Matches (true_idx, pred_idx, iou):")
+        for match in matches:
+            print(f"- {match}")
+        print()
+        print(f"Precision: {precision:.2f}")
+        print(f"Recall:    {recall:.2f}")
+        print(f"F1 Score:  {f1_score:.2f}")
+        print(f"TP: {true_positives}, FP: {false_positives}, FN: {false_negatives}")
+
+    return f1_score
+
+
 def evaluate_predictions(
     image_annotations,
     predictions,
     eval_corners: bool = True,
     eval_num_pieces: bool = True,
     eval_board: bool = True,
+    eval_bboxes: bool = True,
     verbose: bool = True,
 ):
     true_board = image_annotations["board"]
     true_num_pieces = sum([sum(row) for row in true_board])
-    # true_bboxs = image_annotations["detected_pieces"] # don't need this for now
+    true_bboxs = image_annotations["detected_pieces"]
 
     pred_board = predictions["board"]
     pred_num_pieces = sum([sum(row) for row in pred_board])
-    # pred_bboxs = predictions["detected_pieces"]   # don't need this for now
+    pred_bboxs = predictions["detected_pieces"]
 
     num_pieces_diff = 0
     board_diff = 0
     corners_mse = 0
+    bbox_scores = 0
     if eval_num_pieces:
         # Eval number of pieces
         num_pieces_diff = abs(true_num_pieces - pred_num_pieces)
         if verbose:
             print(f"Num pieces diff: {num_pieces_diff}")
 
+    if eval_bboxes:
+        # Eval the bounding boxes
+        bbox_scores = evaluate_bboxes(true_bboxs, pred_bboxs)
+        if verbose:
+            print(f"Bounding boxes scores: {bbox_scores}")
+
     if eval_board:
-        # Now eval the board
+        # Eval the board
         board_diff = 0
         for i in range(8):
             for j in range(8):
@@ -235,17 +308,8 @@ def evaluate_predictions(
             print(f"Board diff: {board_diff}")
 
     if eval_corners:
-        # Now eval the corners
+        # Eval the corners
         corners_mse = evaluate_corners(image_annotations["corners"], predictions["corners"])
-        # for corner_name in corner_names:
-        #     true_corner = [corner_name]
-            
-        #     pred_corner = predictions["corners"][corner_name]
-        #     corners_mse += (true_corner[0] - pred_corner[0]) ** 2 + (
-        #         true_corner[1] - pred_corner[1]
-        #     ) ** 2
-        # corners_mse = corners_mse / len(corner_names)
-        # corners_mse = corners_mse**0.5
         if verbose:
             print(f"Corners MSE: {corners_mse:.2f}")
 
@@ -253,6 +317,7 @@ def evaluate_predictions(
         "num_pieces": num_pieces_diff,
         "board": board_diff,
         "corners": corners_mse,
+        "bboxes": bbox_scores,
     }
 
 
