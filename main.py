@@ -1,3 +1,10 @@
+"""
+`pip install opencv-python shapely pandas`
+
+Run the file by doing `python3 main.py`.
+This will run the image processing pipeline for the images in the `input.json` file and save the results in the `output.json` file.
+"""
+
 import cv2
 import numpy as np
 from shapely.geometry import Polygon
@@ -149,6 +156,143 @@ def convex_hull_intersection(poly1, poly2):
         return cv2.convexHull(points)
 
     return poly1
+
+##==================================== Piece detection for each square using GrabCut =========================================##
+
+def has_piece_grabcut(resized_img, original_corners, original_size, resized_size=(800, 800),
+                      threshold_min=0.15, threshold_max=0.7, iterations=5, nr_pixels_below_piece=10):
+    """
+    Detects if a piece exists in a square using GrabCut on a resized image.
+
+    Parameters:
+        resized_img: the image that has been resized.
+        original_corners: corners in original image coordinates.
+        original_size: size of original image (width, height).
+        resized_size: size of resized image (width, height).
+
+    Returns:
+        has_piece: True if a piece is detected.
+        contour: largest contour in resized image coordinates.
+    """
+    # Scaling factors: original -> resized
+    orig_w, orig_h = original_size
+    resized_h, resized_w = resized_img.shape[:2]
+    scale_x = resized_w / orig_w
+    scale_y = resized_h / orig_h
+
+    # Scale corners to match the resized image
+    scaled_corners = [(int(x * scale_x), int(y * scale_y)) for (x, y) in original_corners]
+    pts = np.array(scaled_corners, dtype=np.int32)
+
+    # Crop ROI
+    x, y, w, h = cv2.boundingRect(pts)
+    square_img = resized_img[y:y+h, x:x+w]
+
+    # Create GrabCut mask
+    mask = np.full((h, w), cv2.GC_EVAL, dtype=np.uint8)
+    cx, cy = w // 2, h // 2
+    radius = min(w, h) // 6
+    outer_radius = min(w, h) // 2.8
+    cv2.circle(mask, (cx, cy), radius, cv2.GC_FGD, -1)
+
+    # Create coordinate indices for the ROI.
+    rows_idx, cols_idx = np.indices((h, w))
+    # Compute the Euclidean distance from each pixel to the ROI center.
+    distance = np.sqrt((cols_idx - cx)**2 + (rows_idx - cy)**2)
+    
+    # Initialize the mask: all pixels are set to probable background.
+    mask = np.full((h, w), cv2.GC_PR_FGD, dtype=np.uint8)
+    # Inside the circle (distance <= piece_radius), mark as definite foreground.
+    mask[distance <= radius] = cv2.GC_PR_FGD
+
+    border_thickness = 10
+    mask[:border_thickness, :] = cv2.GC_PR_BGD
+    mask[-border_thickness:, :] = cv2.GC_PR_BGD
+    mask[:, :border_thickness] = cv2.GC_PR_BGD
+    mask[:, -border_thickness:] = cv2.GC_PR_BGD
+
+    # Outside the circle—but only in the lower half (rows below the center) mark as definite background.
+    mask[(distance > outer_radius) & (rows_idx > cy)] = cv2.GC_PR_BGD
+    mask[-nr_pixels_below_piece:, :] = cv2.GC_PR_BGD
+
+    hint_mask = mask.copy()
+    # Run GrabCut
+    bgModel = np.zeros((1, 65), dtype=np.float64)
+    fgModel = np.zeros((1, 65), dtype=np.float64)
+    cv2.grabCut(square_img, mask, None, bgModel, fgModel, iterations, cv2.GC_INIT_WITH_MASK)
+
+    result_mask = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 1, 0).astype("uint8")
+    foreground_ratio = np.sum(result_mask) / float(w * h)
+    has_piece = threshold_min < foreground_ratio and foreground_ratio < threshold_max
+
+    # print(f"Detected piece: {has_piece} (foreground ratio: {foreground_ratio:.2f})")
+
+    largest_contour = None
+    if has_piece:
+        contours, _ = cv2.findContours(result_mask * 255, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # Offset contours to original image coordinates
+        if contours:
+            largest_contour = max(contours, key=cv2.contourArea)
+            largest_contour += np.array([[x, y]])  # Broadcast the offset
+            # Now, scale the contour's coordinates from the resized image back to the original image.
+            largest_contour = largest_contour.astype(np.float32)
+            largest_contour[:, 0, 0] /= scale_x  # x-coordinates
+            largest_contour[:, 0, 1] /= scale_y  # y-coordinates
+            largest_contour = largest_contour.astype(np.int32)
+
+        # do it again making everything probable background except the piece ???
+
+    color_map = {
+        cv2.GC_BGD:    (0, 0, 255),   # Definite background: Red.
+        cv2.GC_FGD:    (0, 255, 0),   # Definite foreground: Green.
+        cv2.GC_PR_BGD: (255, 0, 0),   # Probable background: Blue.
+        cv2.GC_PR_FGD: (0, 255, 255)  # Probable foreground: Yellow.
+    }
+
+    # Now, scale the local result_mask back to original coordinates.
+    # Compute ROI location in original image coordinates.
+    orig_roi_x = int(x / scale_x)
+    orig_roi_y = int(y / scale_y)
+    orig_roi_w = int(w / scale_x)
+    orig_roi_h = int(h / scale_y)
+    # Resize result_mask to the ROI's size in the original coordinate system.
+    scaled_result_mask = cv2.resize(result_mask, (orig_roi_w, orig_roi_h), interpolation=cv2.INTER_NEAREST)
+    
+    # Create an overall mask (same size as the original image) and place the scaled ROI mask.
+    overall_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
+    overall_mask[orig_roi_y:orig_roi_y+orig_roi_h, orig_roi_x:orig_roi_x+orig_roi_w] = scaled_result_mask
+
+    # Create a color image for the hint mask.
+    colored_hint_local = np.zeros((h, w, 3), dtype=np.uint8)
+    for label, color in color_map.items():
+        colored_hint_local[hint_mask == label] = color
+
+    # Resize the colored hint mask back to original ROI size.
+    colored_hint_resized = cv2.resize(colored_hint_local, (orig_roi_w, orig_roi_h), interpolation=cv2.INTER_NEAREST)
+    
+    # Create an overall colored hint mask (same size as original image) and place the resized ROI.
+    hint_overall_mask_color = np.zeros((orig_h, orig_w, 3), dtype=np.uint8)
+    hint_overall_mask_color[orig_roi_y:orig_roi_y+orig_roi_h, orig_roi_x:orig_roi_x+orig_roi_w] = colored_hint_resized
+
+    # Apply Otsu's binarization on the square image
+    square_img_gray = cv2.cvtColor(square_img, cv2.COLOR_BGR2GRAY)
+    _, otsu_mask = cv2.threshold(square_img_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    otsu_mask = cv2.cvtColor(otsu_mask, cv2.COLOR_GRAY2BGR)  # Convert to 3 channels to match the final output
+
+    # Resize the Otsu mask back to original ROI size
+    otsu_resized = cv2.resize(otsu_mask, (orig_roi_w, orig_roi_h), interpolation=cv2.INTER_NEAREST)
+
+    # Create an overall Otsu color mask for the entire original image size
+    overall_otsu_color = np.zeros((orig_h, orig_w, 3), dtype=np.uint8)
+    overall_otsu_color[orig_roi_y:orig_roi_y+orig_roi_h, orig_roi_x:orig_roi_x+orig_roi_w] = otsu_resized
+
+    # Apply K-means clustering to the square image (assumes a 2D color space)
+    square_img_reshaped = square_img.reshape((-1, 3))  # Reshape to (N, 3) where N is the number of pixels
+    square_img_reshaped = np.float32(square_img_reshaped)  # Convert to float32 for K-means
+
+
+    return has_piece, largest_contour, hint_overall_mask_color, overall_mask * 255, foreground_ratio, overall_otsu_color
 
 ##==================================== Square and Piece Detection Helpers ====================================================##
 
@@ -326,10 +470,63 @@ def has_piece(image, square_vertices) -> bool:  # TODO: Improve this algorithm
                     return True
     
     return False
-    
+
+##================================= Converting contours/bboxes back to original space ============================================##
+
+def draw_bboxes(img, bboxes):
+    for xmin, ymin, xmax, ymax in bboxes:
+        cv2.rectangle(img, (xmin, ymin), (xmax, ymax), (0, 255, 0), 10)
+
+def get_bboxes(contours):
+    bboxes = map(cv2.boundingRect, contours)
+    bboxes = [
+        (x, y, x + w, y + h)
+        for x, y, w, h in bboxes
+    ]
+    return bboxes
+
+def bboxes_to_dicts(bboxes):
+    ans = []
+    for xmin, ymin, xmax, ymax in bboxes:
+        ans.append({
+            "xmin": xmin,
+            "ymin": ymin,
+            "xmax": xmax,
+            "ymax": ymax,
+        })
+    return ans
+
+"""
+Cannot convert bounding boxes to original
+Need to convert contours
+Otherwise bounding boxes conversion will lead to high imprecisions, because of perspective transform
+That happens because we need to do the bounding boxes again in the original image (after converting the bounding boxes)
+"""
+def convert_contours_to_original(original_transform, contours):
+    # Calculate the inverse perspective transform
+    inverse_transform = np.linalg.inv(original_transform)
+
+    # Prepare converted contours list
+    original_contours = []
+
+    for contour in contours:
+        # Convert contour to the shape (N, 1, 2) and type float32
+        contour_float = contour.astype(np.float32)
+
+        # Apply inverse perspective transform
+        original_contour = cv2.perspectiveTransform(contour_float, inverse_transform)
+
+        # Convert back to int and append
+        original_contours.append(original_contour.astype(np.int32))
+
+    return original_contours
+
 ##====================================== MAIN IMAGE PROCESSING FUNCTION =========================================================##
 
 def process_image(image_path, output_dir: Optional[str] = None, output_config: Optional[dict] = None, default_show_image: bool = False):
+    # Hyperparameters
+
+    # For corner detection
     THRESHOLD_MAXVAL: int = 255
     THRESHOLD_THRESH: int = 200
     THRESHOLD_SATURATION_MAX: int = 50
@@ -338,6 +535,11 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     MAX_DISTANCE_TO_MERGE_CONTOURS: int = 5
     MIN_DISTANCE_TO_IMAGE_BORDER: int = 10
     FILTER_BY_SATURATION: bool = False
+
+    # For bbox detection
+    MIN_PIECE_CONTOUR_AREA: int = int(2e4)
+    MIN_PIECE_CONTOUR_WIDTH: int = 30
+    MIN_PIECE_CONTOUR_HEIGHT: int = 30
 
     img_color = cv2.imread(image_path, cv2.IMREAD_COLOR_BGR)
     if img_color is None:
@@ -448,7 +650,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
 
     # Apply the warp matrix to the image
     warped_img = cv2.warpPerspective(img, warp_matrix, (img.shape[1], img.shape[0]))
-
+    warped_img_color = cv2.warpPerspective(img_color, warp_matrix, (img.shape[1], img.shape[0]))
 
     # CLAHE
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -526,8 +728,15 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     
     board = [[0] * cols for _ in range(rows)] if rows > 0 and cols > 0 else [[0]]
 
-    pieces_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
-    
+    # pieces_img = cv2.cvtColor(warped_img, cv2.COLOR_GRAY2BGR)
+    pieces_img = warped_img_color.copy()
+    warped_img_color_blurred = cv2.GaussianBlur(warped_img_color, (5, 5), 0)
+    # warped_img_color_blurred_resized = cv2.resize(warped_img_color_blurred, (800, 800))
+
+    final_mask = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
+    foreground_ratios = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
+    gc_hint_mask_color = np.zeros_like(warped_img_color, dtype=np.uint8)
+    otsu_mask = np.zeros_like(warped_img_color, dtype=np.uint8)
     for i in range(rows):
         for j in range(cols):
             if (i+1) * step + j + 1 < len(filtered_intersections):
@@ -537,10 +746,116 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
                     filtered_intersections[(i + 1) * step + j + 1],
                     filtered_intersections[(i + 1) * step + j],
                 ]
+                # grabcut_has_piece, contour, hint_local_mask, local_mask, fg_ratio, otsu_result = has_piece_grabcut(
+                #     warped_img_color_blurred_resized,
+                #     square_corners,
+                #     original_size=img.shape,
+                #     resized_size=(800, 800),
+                # )
+                # pts = np.array(square_corners, dtype=np.int32)
+                # rect = cv2.boundingRect(pts)
+                # center_x = rect[0] + rect[2] // 2
+                # center_y = rect[1] + rect[3] // 2
+                # percentage_text = f"{fg_ratio*100:.0f}"
+                # cv2.putText(foreground_ratios, percentage_text, (center_x - 100, center_y + 50),
+                #             cv2.FONT_HERSHEY_SIMPLEX, 5, (255, 0, 0), 2)
+
+                # final_mask = cv2.bitwise_or(final_mask, local_mask)
+                # gc_hint_mask_color = cv2.bitwise_or(gc_hint_mask_color, hint_local_mask)
+                # otsu_mask = cv2.bitwise_or(otsu_mask, otsu_result)
+                # if grabcut_has_piece:
+                #     board[i][j] = 1
+                #     # Get the bounding rectangle from the contour for drawing purposes.
+                #     contour_bbox = cv2.boundingRect(contour)
+                #     # Draw the bounding rectangle on the pieces image.
+                #     x, y, w, h = contour_bbox
+                #     cv2.polylines(pieces_img, [np.array([
+                #         [x, y],
+                #         [x + w, y],
+                #         [x + w, y + h],
+                #         [x, y + h]
+                #     ])], True, (0, 0, 255), 10)
+
+                #     cv2.polylines(pieces_img, [np.array(square_corners)], True, (0, 255, 0), 10)
+                #     cv2.polylines(foreground_ratios, [np.array(square_corners)], True, 255, 10)
 
                 if has_piece(warped_img, square_corners):
                     board[i][j] = 1
                     cv2.polylines(pieces_img, [np.array(square_corners)], True, (0, 0, 255), 10)
+
+    warped_hsv = cv2.cvtColor(warped_img_color_blurred, cv2.COLOR_BGR2HSV)
+    black_lower = np.array([0, 0, 0])
+    black_upper = np.array([180, 50, 80])  # saturation < 100, value < 80
+
+    black_mask = cv2.inRange(warped_hsv, black_lower, black_upper)
+    # black_mask = cv2.erode(black_mask, None, iterations=2)
+    # black_mask = cv2.dilate(black_mask, None, iterations=2)
+    # # make it more blob-like (using morphology)
+    # kernel = np.ones((5, 5), np.uint8)
+    # black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel, iterations=20)
+
+
+    hl, hu = 15, 40    # hue ~ yellow, saturation > X, value > Y
+    sl, su = 25, 255
+    vl, vu = 100, 255
+
+    # white_lower = np.array([hl, sl, vl])
+    # white_upper = np.array([hu, su, vu])
+    # white_mask = cv2.inRange(warped_hsv, white_lower, white_upper)
+
+    # Split channels
+    h, s, v = cv2.split(warped_hsv)
+
+    # Create individual binary masks
+    # For debugging purposes, using an "and" manually helps (since we can inspect each part manually)
+    h_mask = (h >= hl) & (h <= hu)
+    s_mask = (s >= sl) & (s <= su)
+    v_mask = (v >= vl) & (v <= vu)
+
+    # threshold
+    # gs_img = cv2.cvtColor(warped_img_color_blurred, cv2.COLOR_BGR2GRAY)
+    # _, gs_v_th = cv2.threshold(gs_img, 100, 255, cv2.THRESH_BINARY)
+    # v_mask = gs_v_th
+
+    # Combine them with logical AND
+    hsv_mask = h_mask & s_mask & v_mask
+    white_mask = (hsv_mask.astype(np.uint8)) * 255
+    # white_mask = cv2.bitwise_and(warped_hsv, warped_hsv, mask=hsv_mask)
+
+    morphological_op_white_mask = cv2.erode(white_mask, None, iterations=5)
+    morphological_op_white_mask = cv2.dilate(morphological_op_white_mask, None, iterations=5)
+
+
+    h_mask = np.uint8(h_mask) * 255
+    s_mask = np.uint8(s_mask) * 255
+    v_mask = np.uint8(v_mask) * 255
+
+    piece_contours = warped_img_color.copy()
+    bboxes_img = warped_img_color.copy()
+    original_bboxes_image = img_color.copy()
+
+    # find contours in white mask
+    contours, _ = cv2.findContours(morphological_op_white_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # filter contours by area
+    white_contours = [c for c in contours if cv2.contourArea(c) > MIN_PIECE_CONTOUR_AREA]
+
+    # (x, y, w, h) = cv2.boundingRect(c)
+    white_bboxes = [cv2.boundingRect(c) for c in white_contours]
+    white_contours = [
+        c for c, bbox in zip(white_contours, white_bboxes)
+        if bbox[2] > MIN_PIECE_CONTOUR_WIDTH and bbox[3] > MIN_PIECE_CONTOUR_HEIGHT
+    ]
+
+    cv2.drawContours(piece_contours, white_contours, -1, (255, 0, 0), 3)
+
+    filtered_white_bboxes = get_bboxes(white_contours)
+    draw_bboxes(bboxes_img, filtered_white_bboxes)
+
+    original_contours = convert_contours_to_original(warp_matrix, white_contours)
+    original_bboxes = get_bboxes(original_contours)
+    draw_bboxes(original_bboxes_image, original_bboxes)
+    bboxes_ans = bboxes_to_dicts(original_bboxes)
 
     if output_dir is not None:
         base_filename = os.path.splitext(os.path.basename(image_path))[0]
@@ -561,7 +876,21 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
             ('hough_lines', lambda: hough_lines_img),
             ('hough_lines_rectified', lambda: hough_lines_rectified_img),
             ('filtered_intersections', lambda: filtered_intersections_img),
-            ('pieces', lambda: pieces_img),
+            ('pieces_gc', lambda: pieces_img),
+            ('warped_color', lambda: warped_img_color),
+            ('grabcut_mask', lambda: final_mask),
+            ('grabcut_fg_ratios', lambda: foreground_ratios),
+            ('grabcut_hint_mask', lambda: gc_hint_mask_color),
+            ('black_pieces', lambda: black_mask),
+            ('white_pieces_mask', lambda: white_mask),
+            ('white_pieces_mask_morph', lambda: morphological_op_white_mask),
+            ('bboxes', lambda: bboxes_img),
+            ('piece_contours', lambda: piece_contours),
+            ('hue_mask', lambda: h_mask),
+            ('sat_mask', lambda: s_mask),
+            ('val_mask', lambda: v_mask),
+            ('otsu_mask', lambda: otsu_mask),
+            ('bboxes_orig', lambda: original_bboxes_image),
         ]
 
         for output_type, get_image in output_handlers:
@@ -582,7 +911,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
             "top_right": top_right,
         },
         "board": board,
-        "detected_pieces": [],
+        "detected_pieces": bboxes_ans,
         "num_pieces": sum([sum(row) for row in board]),
     }
 
@@ -590,13 +919,19 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
     return predictions
 
 
-def process_all_images(output_dir, output_config, eval_predictions: bool = True, show_all_images: bool = False, max_workers: int = None):
+def process_all_images(
+    output_dir,
+    output_config,
+    eval_predictions: bool = True,
+    show_all_images: bool = False,
+    max_workers: int = None,
+):
     images_dir = "./data/images"
     output = []
     
     # Get a list of all image files
     image_files = [
-        filename for filename in os.listdir(images_dir)
+        filename for filename in sorted(os.listdir(images_dir))
         if filename.endswith((".jpg", ".jpeg", ".png"))
     ]
     
@@ -629,7 +964,7 @@ def process_all_images(output_dir, output_config, eval_predictions: bool = True,
                     "detected_pieces": predictions['detected_pieces'],
                     "filename": filename,
                 })
-                
+
                 if eval_predictions:
                     image_annotations = get_annotations_by_image_name(filename, dataset)
                     evaluations = evaluate_predictions(
@@ -637,6 +972,8 @@ def process_all_images(output_dir, output_config, eval_predictions: bool = True,
                         predictions,
                         eval_board=False,
                         eval_num_pieces=False,
+                        eval_corners=False,
+                        eval_bboxes=True,
                         verbose=False,
                     )
                     with lock:
@@ -651,24 +988,26 @@ def process_all_images(output_dir, output_config, eval_predictions: bool = True,
                 future.result()
             except Exception as e:
                 print(f"Thread error: {e}")
-    
+
     while not results_queue.empty():
         output.append(results_queue.get())
     
     output.sort(key=lambda x: x.get("image", ""))
-    
+
     if eval_predictions:
+        # the corners we define are different from the corners in the annotations
+        # so there is also a threshold for the error being too small
         TOO_LARGE_CORNER_ERROR = 50000
-        TOO_SMALL_CORNER_ERROR = 20000  # the corners we define are different from the corners in the annotations
+        TOO_SMALL_CORNER_ERROR = 20000
         evaluations = pd.DataFrame(image_evaluations)
         evaluations["clickable_image_path"] = evaluations["image_path"].apply(
             lambda x: os.path.splitext(os.path.basename(x))[0]
         )
-        by_corners = evaluations
-        by_corners = by_corners.sort_values(by="corners", ascending=False)
+        by_bboxes = evaluations
+        by_bboxes = by_bboxes.sort_values(by="bboxes", ascending=False)
 
         if show_all_images and output_config.get("corners", False):
-            for image_path in by_corners["clickable_image_path"]:
+            for image_path in by_bboxes["clickable_image_path"]:
                 cv2.imshow(
                     image_path,
                     cv2.resize(
@@ -679,8 +1018,9 @@ def process_all_images(output_dir, output_config, eval_predictions: bool = True,
                 cv2.waitKey(0)
                 cv2.destroyAllWindows()
 
-        print(f"Possible bad corners count: {len(by_corners)}")
-        print(by_corners)
+        print(f"Possible bad corners count: {len(by_bboxes)}")
+        print(by_bboxes)
+        print(by_bboxes["bboxes"].mean())
 
     with open("output.json", "w") as f:
         json.dump(output, f, indent=4)
@@ -712,12 +1052,15 @@ def process_input(output_dir, output_config, eval_predictions: bool = True):
             "detected_pieces": predictions['detected_pieces'],
         })
         if eval_predictions:
-            image_annotations = get_annotations_by_image_name(image, dataset)
+            image_name = os.path.basename(image)
+            image_annotations = get_annotations_by_image_name(image_name, dataset)
             evaluations = evaluate_predictions(
                 image_annotations,
                 predictions,
                 eval_board=False,
                 eval_num_pieces=False,
+                eval_corners=False,
+                eval_bboxes=True,
                 verbose=True,
             )
             print(evaluations)
@@ -790,6 +1133,7 @@ def stitch_images(output_dir, image_type='warped',  grid_size=(7,8), output_file
         canvas[y_offset:y_offset + max_height, x_offset:x_offset + max_width] = resized_img
     
     output_path = os.path.join(output_dir, output_filename)
+    canvas = cv2.resize(canvas, (3000, 3000))   # Resize canvas to 3000x3000 (otherwise it is too large)
     cv2.imwrite(output_path, canvas)
     
     print(f"Stitched {len(images)} {image_type} images into grid {grid_size} at {output_path}")
@@ -819,16 +1163,51 @@ if __name__ == "__main__":
         'contour': False,
         'threshold': False,
         'warped': False,
+        'warped_color': True,
         'clahe': False,
-        'blurred_warped': False,
+        'blurred_warp': False,
         'canny_edges': False,
         'dilated': False,
         'hough_lines': False,
         'hough_lines_rectified': False,
-        'filtered_intersections': True,
-        'pieces': False,
+        'filtered_intersections': False,
+        'pieces_gc': True,
+        'grabcut_mask': True,
+        'grabcut_fg_ratios': True,
+        'grabcut_hint_mask': True,
+        'white_pieces_mask': True,
+        'white_pieces_mask_morph': True,
+        'black_pieces': True,
+        'piece_contours': True,
+        'bboxes': True,
+        "hue_mask": True,
+        "sat_mask": True,
+        "val_mask": True,
+        'dominant': True,
+        'segmented_0': True,
+        'segmented_1': True,
+        'otsu_mask': True,
+        'bboxes_orig': True,
     }
+    for config in output_config:
+        for other_config in output_config:
+            if config != other_config and other_config.endswith(config):
+                raise ValueError(
+                    f"""Output config name '{other_config}' ends with the name of '{config}'.
+                    No config's name should end with another config's name.""")
 
-    process_all_images(output_dir, output_config, eval_predictions=False)
-    #process_input(output_dir, output_config, eval_predictions=False)
-    stitch_images(output_dir, image_type='filtered_intersections')
+    process_all_images(output_dir, output_config, eval_predictions=True)
+    # process_input(output_dir, output_config, eval_predictions=True)
+
+    stitch_images(output_dir, image_type='warped_color')
+    stitch_images(output_dir, image_type="black_pieces")
+    stitch_images(output_dir, image_type="white_pieces_mask")
+    stitch_images(output_dir, image_type="white_pieces_mask_morph")
+    stitch_images(output_dir, image_type="grabcut_hint_mask")
+    stitch_images(output_dir, image_type="grabcut_fg_ratios")
+    stitch_images(output_dir, image_type="grabcut_mask")
+    stitch_images(output_dir, image_type="otsu_mask")
+    stitch_images(output_dir, image_type="kmeans_mask")
+    stitch_images(output_dir, image_type='piece_contours')
+    stitch_images(output_dir, image_type='bboxes')
+    stitch_images(output_dir, image_type='bboxes_orig')
