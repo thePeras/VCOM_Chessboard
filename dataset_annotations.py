@@ -200,28 +200,28 @@ def evaluate_corners(true_corners, pred_corners, verbose: bool = False):
             )
     return min_corners_mse
 
+def bbox_area(bbox: dict[str, float]):
+    return (bbox["xmax"] - bbox["xmin"]) * (bbox["ymax"] - bbox["ymin"])
+
+def bbox_intersection_area(box_a: dict[str, float], box_b: dict[str, float]):
+    x_a = max(box_a["xmin"], box_b["xmin"])
+    y_a = max(box_a["ymin"], box_b["ymin"])
+    x_b = min(box_a["xmax"], box_b["xmax"])
+    y_b = min(box_a["ymax"], box_b["ymax"])
+
+    inter_area = max(0, x_b - x_a) * max(0, y_b - y_a)
+    return inter_area
+
+def iou(box_a: dict[str, float], box_b: dict[str, float]):
+    inter_area = bbox_intersection_area(box_a, box_b)
+
+    area_a = bbox_area(box_a)
+    area_b = bbox_area(box_b)
+    union_area = area_a + area_b - inter_area
+
+    return inter_area / union_area
 
 def evaluate_bboxes(true_bboxes, pred_bboxes, verbose: bool = False):
-    def area(bbox):
-        return (bbox["xmax"] - bbox["xmin"]) * (bbox["ymax"] - bbox["ymin"])
-
-    def iou(box_a, box_b):
-        # box = (xmin, ymin, xmax, ymax)
-        x_a = max(box_a["xmin"], box_b["xmin"])
-        y_a = max(box_a["ymin"], box_b["ymin"])
-        x_b = min(box_a["xmax"], box_b["xmax"])
-        y_b = min(box_a["ymax"], box_b["ymax"])
-
-        inter_area = max(0, x_b - x_a) * max(0, y_b - y_a)
-        if inter_area == 0:
-            return 0.0
-
-        area_a = area(box_a)
-        area_b = area(box_b)
-        union_area = area_a + area_b - inter_area
-
-        return inter_area / union_area
-
     matches = []
     iou_threshold = 0.5
     used_pred_indices = set()
