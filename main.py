@@ -1407,8 +1407,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
         "detected_pieces": bboxes_ans,
         "num_pieces": sum([sum(row) for row in board]),
     }
-
-    print(f"Processed {base_filename}")
+    print(f"Processed {image_path}")
     return predictions
 
 
@@ -1537,7 +1536,9 @@ def process_input(output_dir, output_config, eval_predictions: bool = True):
 
     output = []
     for image in data['image_files']:
-        image_path = os.path.join("data/", image) # TODO: Delete data/ on submission
+        # image_path = os.path.join("data/", image) # Delete data/ on submission
+        image_path = image  # For submission
+
         predictions = process_image(image_path, output_dir, output_config)
         
         output.append({
@@ -1701,7 +1702,9 @@ def main():
             stitch_images(output_dir, image_type=key)
 
 if __name__ == "__main__":
-    main()
+    process_input(output_dir=None, output_config={}, eval_predictions=False)
+
+    # main()
 
     # Test if labels are being correctly loaded (not used for delivery, just for testing)
     # dataset = get_dataset()
