@@ -718,6 +718,15 @@ def adjust_board(board, rotation):
         iters = 3
     for _ in range(iters):
         adjusted_board = _rotate_90_cw(adjusted_board)
+
+    # For some reason, the dataset labels seem to be inconsistent with the example output.json
+    # if rotation == cv2.ROTATE_90_CLOCKWISE:
+    #     adjusted_board = _rotate_90_cw(board)
+    # elif rotation == cv2.ROTATE_180:
+    #     adjusted_board = [list(reversed(row)) for row in board]
+    # elif rotation == cv2.ROTATE_90_COUNTERCLOCKWISE:
+    #     adjusted_board = _rotate_90_cw(_rotate_90_cw(_rotate_90_cw(board)))
+
     return adjusted_board
 
 ##==================================== Square and Piece Detection Helpers ====================================================##
@@ -949,7 +958,13 @@ def convert_contours_to_original(original_transform, contours):
 
 ##====================================== MAIN IMAGE PROCESSING FUNCTION =========================================================##
 
-def process_image(image_path, output_dir: Optional[str] = None, output_config: Optional[dict] = None, default_show_image: bool = False):
+def process_image(
+    image_path,
+    output_dir: Optional[str] = None,
+    output_config: Optional[dict] = None,
+    is_delivery: bool = False,
+    default_show_image: bool = False
+):
     # Hyperparameters
 
     # For corner detection
@@ -1395,6 +1410,7 @@ def process_image(image_path, output_dir: Optional[str] = None, output_config: O
                 )
 
     adjusted_board = adjust_board(board, image_rotation)
+
     predictions = {
         "image": image_path,
         "corners": {
@@ -1447,7 +1463,7 @@ def process_all_images(
     def process_image_worker(filename):
         image_path = os.path.join(images_dir, filename)
         try:
-            predictions = process_image(image_path, output_dir, output_config)
+            predictions = process_image(image_path, output_dir, output_config, is_delivery=False)
             if predictions:
                 results_queue.put({
                     "image": image_path,
@@ -1523,7 +1539,11 @@ def process_all_images(
     print(f"All images processed. Results saved to {output_dir}")
 
 
-def process_input(output_dir, output_config, eval_predictions: bool = True):
+def process_input(output_dir, output_config, is_delivery: bool = False, eval_predictions: bool = True):
+    if is_delivery and eval_predictions:
+        raise ValueError("""Do not evaluate predictions in the delivery!
+                         In that case, we would be accessing files that do not even exist""")
+
     if not os.path.exists('input.json'):
         print("input.json file not found.")
         exit(1)
@@ -1539,8 +1559,8 @@ def process_input(output_dir, output_config, eval_predictions: bool = True):
         # image_path = os.path.join("data/", image) # Delete data/ on submission
         image_path = image  # For submission
 
-        predictions = process_image(image_path, output_dir, output_config)
-        
+        predictions = process_image(image_path, output_dir, output_config, is_delivery=is_delivery)
+
         output.append({
             "image": image_path,
             "num_pieces": predictions['num_pieces'],
@@ -1694,15 +1714,15 @@ def main():
                     f"""Output config name '{other_config}' ends with the name of '{config}'.
                     No config's name should end with another config's name.""")
 
-    process_all_images(output_dir, output_config, eval_predictions=True)
-    # process_input(output_dir, output_config, eval_predictions=True)
+    # process_all_images(output_dir, output_config, eval_predictions=True)
+    process_input(output_dir, output_config, is_delivery=False, eval_predictions=True)
 
     for key, value in output_config.items():
         if value:
             stitch_images(output_dir, image_type=key)
 
 if __name__ == "__main__":
-    process_input(output_dir=None, output_config={}, eval_predictions=False)
+    process_input(output_dir=None, output_config={}, is_delivery=True, eval_predictions=False)
 
     # main()
 
