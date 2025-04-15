@@ -982,7 +982,7 @@ def process_image(
     MIN_PIECE_CONTOUR_WIDTH: int = 30
     MIN_PIECE_CONTOUR_HEIGHT: int = 30
 
-    img_color = cv2.imread(image_path, cv2.IMREAD_COLOR_BGR)
+    img_color = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if img_color is None:
         print(f"Failed to load image: {image_path}")
         return
@@ -1004,7 +1004,7 @@ def process_image(
     blur_img = cv2.GaussianBlur(img_to_blur, (11, 11), 0)
 
     # Apply global binary threshold - Board segmentation (by intensity)
-    ret, th_global = cv2.threshold(
+    _, th_global = cv2.threshold(
         blur_img, THRESHOLD_THRESH, THRESHOLD_MAXVAL, cv2.THRESH_BINARY
     )
 
@@ -1093,6 +1093,7 @@ def process_image(
     warped_gray_img = cv2.warpPerspective(img, warp_matrix, (img.shape[1], img.shape[0]))
     warped_color_img = cv2.warpPerspective(img_color, warp_matrix, (img.shape[1], img.shape[0]))
 
+    # Board orientation
     image_rotation, horse_location = find_orientation(warped_gray_img)
     if image_rotation is not None:
         rotated_img = cv2.rotate(warped_gray_img, image_rotation)
@@ -1532,8 +1533,7 @@ def process_all_images(
         print(f"Mean of the bounding box score results: '{bbox_results.mean():.4f}', median: {bbox_results.median():.4f}")
         print(f"Mean of the board score results: '{board_results.mean():.4f}', median: {board_results.median():.4f}")
 
-    with open("output.json", "w") as f:
-        json.dump(output, f, indent=4)
+    json.dump(output, open('output.json', 'w'), indent=4)
 
     print("Output JSON file created.")
     print(f"All images processed. Results saved to {output_dir}")
@@ -1548,8 +1548,7 @@ def process_input(output_dir, output_config, is_delivery: bool = False, eval_pre
         print("input.json file not found.")
         exit(1)
 
-    with open("input.json", "r") as f:
-        data = json.load(f)
+    data = json.load(open("input.json", "r"))
     
     if eval_predictions:
         dataset = get_dataset()
@@ -1677,31 +1676,31 @@ def main():
 
     # --- Configure output options ---
     output_config = {
-        'original': False,
-        'corners': False,
-        'contour': False,
-        'threshold': False,
-        'warped': False,
+        'original': True,
+        'corners': True,
+        'contour': True,
+        'threshold': True,
+        'warped': True,
         'warped_color': True,
-        'clahe': False,
-        'blurred_warp': False,
-        'canny_edges': False,
-        'dilated': False,
-        'hough_lines': False,
-        'hough_lines_rectified': False,
-        'filtered_intersections': False,
+        'clahe': True,
+        'blurred_warp': True,
+        'canny_edges': True,
+        'dilated': True,
+        'hough_lines': True,
+        'hough_lines_rectified': True,
+        'filtered_intersections': True,
         'pieces_gc': True,
         'grabcut_mask': True,
         'grabcut_fg_ratios': True,
         'grabcut_hint_mask': True,
         'otsu_mask': True,
-        'white_pieces_mask': False,
+        'white_pieces_mask': True,
         'white_pieces_mask_morph': True,
         'piece_contours': True,
         'bboxes': True,
-        "hue_mask": False,
-        "sat_mask": False,
-        "val_mask": False,
+        "hue_mask": True,
+        "sat_mask": True,
+        "val_mask": True,
         'bboxes_orig': True,
         'pieces': True,
         'horse': True,
@@ -1722,9 +1721,9 @@ def main():
             stitch_images(output_dir, image_type=key)
 
 if __name__ == "__main__":
-    process_input(output_dir=None, output_config={}, is_delivery=True, eval_predictions=False)
+    #process_input(output_dir=None, output_config={}, is_delivery=True, eval_predictions=False)
 
-    # main()
+    main()
 
     # Test if labels are being correctly loaded (not used for delivery, just for testing)
     # dataset = get_dataset()
