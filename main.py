@@ -27,8 +27,8 @@ def get_piece_position(piece: str):
     Get the position of the piece.
     """
     piece = piece.lower()
-    row = ord(piece[0]) - ord("a")
-    col = ord(piece[1]) - ord("1")
+    row = ord(piece[1]) - ord("1")
+    col = ord(piece[0]) - ord("a")
     return row, col
 
 def get_corner_annotations(dataset):
@@ -252,7 +252,6 @@ def evaluate_bboxes(true_bboxes, pred_bboxes, verbose: bool = False):
 def evaluate_board(true_board, pred_board, verbose: bool = False):
     if len(pred_board) != 8 or len(pred_board[0]) != 8:
         return 0
-
     tp = fp = fn = tn = 0
     for row in range(8):
         for col in range(8):
@@ -702,31 +701,58 @@ def find_orientation(image):
     return best_rotation, best_match_loc
 
 ##==================================== Given chessboard orientation, rotate board ===============================================##
-def _rotate_90_cw(board):
+def _rotate_90(board):
+    """
+    Rotates the board 90 degrees clock-wise.
+
+    If the board IMAGE needs to be rotated 90 degrees counterclock-wise,
+    then the board GRID should be rotated 90 degrees clock-wise instead.
+    """
     return [list(reversed(col)) for col in zip(*board)]
 
 def adjust_board(board, rotation):
+    """
+    Adjusts the orientation of a board representation based on a given rotation.
+
+    Good test images:
+    - G000_IMG062.jpg
+    - G000_IMG087.jpg
+    - G006_IMG119.jpg
+    - G033_IMG043.jpg
+
+    Parameters:
+    ----------
+    board : list
+        A 2D list representing the board, where each sublist is a row.
+
+    rotation : cv2.RotateFlag or None
+        The rotation that the board image would be applied to make the horse be bottom-left. Can be one of:
+        - cv2.ROTATE_180
+        - cv2.ROTATE_90_CLOCKWISE
+        - cv2.ROTATE_90_COUNTERCLOCKWISE
+        - None (no rotation)
+        For instance, if the horse was at the top left, then the rotation would be cv2.ROTATE_90_COUNTERCLOCKWISE
+
+    Returns:
+    -------
+    list
+        The adjusted board after applying the appropriate transformation.
+    """
+
     # Need to initially adjust board since we represent it differently than in the dataset label
-    adjusted_board = _rotate_90_cw(board)
+    adjusted_board = list(reversed(board))    # reverse board (columns)
 
     iters = 0
-    if rotation == cv2.ROTATE_90_CLOCKWISE:
-        iters = 1
-    elif rotation == cv2.ROTATE_180:
-        iters = 2
+    if rotation == cv2.ROTATE_180:
+        # Flip original board vertically and horizontally
+        iters = 2   # or instead rotate twice
     elif rotation == cv2.ROTATE_90_COUNTERCLOCKWISE:
-        iters = 3
+        iters = 1
+    elif rotation == cv2.ROTATE_90_CLOCKWISE:
+        iters = 3   # 90 cw = 3 * 90 ccw
+
     for _ in range(iters):
-        adjusted_board = _rotate_90_cw(adjusted_board)
-
-    # For some reason, the dataset labels seem to be inconsistent with the example output.json
-    # if rotation == cv2.ROTATE_90_CLOCKWISE:
-    #     adjusted_board = _rotate_90_cw(board)
-    # elif rotation == cv2.ROTATE_180:
-    #     adjusted_board = [list(reversed(row)) for row in board]
-    # elif rotation == cv2.ROTATE_90_COUNTERCLOCKWISE:
-    #     adjusted_board = _rotate_90_cw(_rotate_90_cw(_rotate_90_cw(board)))
-
+        adjusted_board = _rotate_90(adjusted_board)
     return adjusted_board
 
 ##==================================== Square and Piece Detection Helpers ====================================================##
@@ -1555,8 +1581,7 @@ def process_input(output_dir, output_config, is_delivery: bool = False, eval_pre
 
     output = []
     for image in data['image_files']:
-        # image_path = os.path.join("data/", image) # Delete data/ on submission
-        image_path = image  # For submission
+        image_path = image  # Json should specify specific path
 
         predictions = process_image(image_path, output_dir, output_config, is_delivery=is_delivery)
 
@@ -1713,8 +1738,8 @@ def main():
                     f"""Output config name '{other_config}' ends with the name of '{config}'.
                     No config's name should end with another config's name.""")
 
-    # process_all_images(output_dir, output_config, eval_predictions=True)
-    process_input(output_dir, output_config, is_delivery=False, eval_predictions=True)
+    process_all_images(output_dir, output_config, eval_predictions=True)
+    # process_input(output_dir, output_config, is_delivery=False, eval_predictions=True)
 
     for key, value in output_config.items():
         if value:
