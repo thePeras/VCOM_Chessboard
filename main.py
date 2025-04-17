@@ -472,7 +472,7 @@ def get_largest_contour(
         "largest_contour_without_ch": largest_contour_without_ch,
         "contours_to_merge": contours_to_merge,
     }
-    
+
 def convex_hull_intersection(poly1, poly2):
     """
     Calculate the intersection of two polygons and return the convex hull of the intersection.
@@ -932,6 +932,73 @@ def has_piece(image, square_vertices) -> bool:  # TODO: Improve this algorithm
     
     return False
 
+
+##================================= Helpers to get piece bounding boxes ============================================##
+
+def get_white_pieces_mask(warped_hsv):
+    whl, whu = 15, 40    # hue ~ yellow, saturation > X, value > Y
+    wsl, wsu = 25, 255
+    wvl, wvu = 100, 255
+
+    # white_lower = np.array([hl, sl, vl])
+    # white_upper = np.array([hu, su, vu])
+    # white_mask = cv2.inRange(warped_hsv, white_lower, white_upper)
+
+    # Instead of splitting everything at once, do it individually
+    # Split channels
+    h, s, v = cv2.split(warped_hsv)
+
+    # Create individual binary masks
+    # For debugging purposes, using an "and" manually helps (since we can inspect each part manually)
+    white_h_mask = (h >= whl) & (h <= whu)
+    white_s_mask = (s >= wsl) & (s <= wsu)
+    white_v_mask = (v >= wvl) & (v <= wvu)
+
+    # Instead of threshold value, can do it like this:
+    # gs_img = cv2.cvtColor(warped_img_color_blurred, cv2.COLOR_BGR2GRAY)
+    # _, gs_v_th = cv2.threshold(gs_img, 100, 255, cv2.THRESH_BINARY)
+    # v_mask = gs_v_th
+
+    # Combine them with AND
+    white_hsv_mask = white_h_mask & white_s_mask & white_v_mask
+    white_mask = (white_hsv_mask.astype(np.uint8)) * 255
+
+    final_white_mask = cv2.erode(white_mask, None, iterations=5)
+    final_white_mask = cv2.dilate(final_white_mask, None, iterations=5)
+
+    # Debugging purposes
+    white_h_mask = np.uint8(white_h_mask) * 255
+    white_s_mask = np.uint8(white_s_mask) * 255
+    white_v_mask = np.uint8(white_v_mask) * 255
+    return final_white_mask, white_mask, (white_h_mask, white_s_mask, white_v_mask)
+
+def find_contours_in_mask(
+    mask_img,
+    min_piece_contour_area: int,
+    max_piece_contour_area: int,
+    min_piece_bbox_width: int,
+    min_piece_bbox_height: int,
+):
+    contours, _ = cv2.findContours(mask_img, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Filter contours by area
+    contour_areas = [cv2.contourArea(c) for c in contours]
+    contour_ch_areas = [cv2.contourArea(cv2.convexHull(c)) for c in contours]
+    contours = [
+        c
+        for c, a, ch_a in zip(contours, contour_areas, contour_ch_areas)
+        if min_piece_contour_area <= a and ch_a <= max_piece_contour_area
+    ]
+
+    # (x, y, w, h) = cv2.boundingRect(c)
+    bboxes = [cv2.boundingRect(c) for c in contours]
+    # Filter contours by bbox width and height
+    contours = [
+        c for c, bbox in zip(contours, bboxes)
+        if bbox[2] > min_piece_bbox_width and bbox[3] > min_piece_bbox_height
+    ]
+    return contours
+
 ##================================= Converting contours/bboxes back to original space ============================================##
 
 def draw_bboxes(img, bboxes, color=(0, 255, 0)):
@@ -1005,8 +1072,9 @@ def process_image(
 
     # For bbox detection
     MIN_PIECE_CONTOUR_AREA: int = int(2e4)
-    MIN_PIECE_CONTOUR_WIDTH: int = 30
-    MIN_PIECE_CONTOUR_HEIGHT: int = 30
+    MAX_PIECE_CONTOUR_AREA: int = int(5e5)
+    MIN_PIECE_BBOX_WIDTH: int = 30
+    MIN_PIECE_BBOX_HEIGHT: int = 30
 
     img_color = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if img_color is None:
@@ -1203,7 +1271,7 @@ def process_image(
         step = grid_side + 1
         print(f"Using a {rows}x{cols} grid with {len(filtered_intersections)} intersections")
 
-    # Avoid any possible errors (e.g. did not detect complete board)
+    # Avoid direct errors (e.g. did not detect complete board)
     board = [[0] * 8 for _ in range(8)]
     # board = [[0] * cols for _ in range(rows)] if rows > 0 and cols > 0 else [[0] * 8]
 
@@ -1271,80 +1339,119 @@ def process_image(
                 #     board[i][j] = 1
                 #     cv2.polylines(pieces_img, [np.array(square_corners)], True, (0, 0, 255), 10)
 
-    ##===================== Detect white pieces bounding boxes =========================##
+    ##===================== Detect pieces bounding boxes =========================##
 
     warped_hsv = cv2.cvtColor(warped_img_color_blurred, cv2.COLOR_BGR2HSV)
-    black_lower = np.array([0, 0, 0])
-    black_upper = np.array([180, 50, 80])  # saturation < 100, value < 80
+    warped_lab = cv2.cvtColor(warped_img_color_blurred, cv2.COLOR_BGR2LAB)
 
-    black_mask = cv2.inRange(warped_hsv, black_lower, black_upper)
+    white_mask, final_white_mask, (white_h_mask, white_s_mask, white_v_mask) = get_white_pieces_mask(warped_hsv)
+
+    # Instead of splitting everything at once, do it individually
+    # Split channels
+    h, s, v = cv2.split(warped_hsv)
+    l, _, _ = cv2.split(warped_lab)
+
+    # Apply CLAHE
+    # h = clahe.apply(h)
+    s = clahe.apply(s)
+    v = clahe.apply(v)
+    l = clahe.apply(l)
+    
+    hsv_clahed = cv2.merge((h, s, v))
+    bgr_clahed = cv2.cvtColor(hsv_clahed, cv2.COLOR_HSV2BGR)
+
+    bhl, bhu = 0, 255
+    bsl, bsu = 0, 80
+    bvl, bvu = 0, 80
+    # black_lower = np.array([0, 0, 0])
+    # black_upper = np.array([180, 50, 80])  # saturation < 100, value < 80
+    # black_lower = np.array([bhl, bsl, bvl])
+    # black_upper = np.array([bhu, bsu, bvu])
+    # black_mask = cv2.inRange(warped_hsv, black_lower, black_upper)
+
+    black_h_mask = (h >= bhl) & (h <= bhu)
+    black_s_mask = (s >= bsl) & (s <= bsu)
+    black_v_mask = (l >= bvl) & (l <= bvu)
+    black_hsv_mask = black_h_mask & black_s_mask & black_v_mask
+    black_mask = (black_hsv_mask.astype(np.uint8)) * 255
+
+    # Debugging purposes
+    black_h_mask = np.uint8(black_h_mask) * 255
+    black_s_mask = np.uint8(black_s_mask) * 255
+    black_v_mask = np.uint8(black_v_mask) * 255
+
+    morphological_op_black_mask = cv2.dilate(black_mask, None, iterations=15)
+    # morphological_op_black_mask = cv2.erode(morphological_op_black_mask, None, iterations=12)
+
+    # morphological_op_black_mask = cv2.morphologyEx(morphological_op_black_mask, cv2.MORPH_CLOSE, kernel, iterations=5)
+    # morphological_op_black_mask = cv2.erode(morphological_op_black_mask, None, iterations=10)
+
     # black_mask = cv2.erode(black_mask, None, iterations=2)
     # black_mask = cv2.dilate(black_mask, None, iterations=2)
     # # make it more blob-like (using morphology)
     # kernel = np.ones((5, 5), np.uint8)
     # black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel, iterations=20)
 
-    hl, hu = 15, 40    # hue ~ yellow, saturation > X, value > Y
-    sl, su = 25, 255
-    vl, vu = 100, 255
+    dist_transform = cv2.distanceTransform(morphological_op_black_mask, cv2.DIST_L2, 5)
+    _, dist_transform_sure_fg = cv2.threshold(dist_transform, 0.4*dist_transform.max(), 255, 0)
 
-    # white_lower = np.array([hl, sl, vl])
-    # white_upper = np.array([hu, su, vu])
-    # white_mask = cv2.inRange(warped_hsv, white_lower, white_upper)
+    dist_transform_sure_fg = np.uint8(dist_transform_sure_fg)
+    sure_bg = cv2.dilate(morphological_op_black_mask, None, iterations=5)
+    unknown = cv2.subtract(sure_bg, dist_transform_sure_fg)
 
-    # Instead of splitting everything at once, do it individually
-    # Split channels
-    h, s, v = cv2.split(warped_hsv)
+    # Marker labelling
+    ret, markers = cv2.connectedComponents(dist_transform_sure_fg)
 
-    # Create individual binary masks
-    # For debugging purposes, using an "and" manually helps (since we can inspect each part manually)
-    h_mask = (h >= hl) & (h <= hu)
-    s_mask = (s >= sl) & (s <= su)
-    v_mask = (v >= vl) & (v <= vu)
+    # Add one to all labels so that sure background is not 0, but 1
+    markers = markers + 1
 
-    # Instead of threshold value, can do it like this:
-    # gs_img = cv2.cvtColor(warped_img_color_blurred, cv2.COLOR_BGR2GRAY)
-    # _, gs_v_th = cv2.threshold(gs_img, 100, 255, cv2.THRESH_BINARY)
-    # v_mask = gs_v_th
+    # Now, mark the region of unknown with zero
+    markers[unknown==255] = 0
 
-    # Combine them with logical AND
-    hsv_mask = h_mask & s_mask & v_mask
-    white_mask = (hsv_mask.astype(np.uint8)) * 255
+    markers = cv2.watershed(warped_img_color_blurred, markers)
+    markers[markers > 1] = 255
+    markers[markers == 1] = 0
+    markers = np.uint8(markers)
 
-    morphological_op_white_mask = cv2.erode(white_mask, None, iterations=5)
-    morphological_op_white_mask = cv2.dilate(morphological_op_white_mask, None, iterations=5)
+    sure_bg = np.uint8(sure_bg)
+    dist_transform_sure_fg = np.uint8(dist_transform_sure_fg)
 
-
-    h_mask = np.uint8(h_mask) * 255
-    s_mask = np.uint8(s_mask) * 255
-    v_mask = np.uint8(v_mask) * 255
-
-    piece_contours = warped_color_img.copy()
+    piece_contours_img = warped_color_img.copy()
     bboxes_img = warped_color_img.copy()
     original_bboxes_image = img_color.copy()
 
     # Find contours in white mask
-    contours, _ = cv2.findContours(morphological_op_white_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    white_contours = find_contours_in_mask(
+        final_white_mask,
+        MIN_PIECE_CONTOUR_AREA,
+        MAX_PIECE_CONTOUR_AREA,
+        MIN_PIECE_BBOX_WIDTH,
+        MIN_PIECE_BBOX_HEIGHT,
+    )
+    cv2.drawContours(piece_contours_img, white_contours, -1, (255, 0, 0), 5)
 
-    # Filter contours by area
-    white_contours = [c for c in contours if cv2.contourArea(c) > MIN_PIECE_CONTOUR_AREA]
+    final_black_mask = np.uint8(markers)
+    black_contours = find_contours_in_mask(
+        final_black_mask,
+        MIN_PIECE_CONTOUR_AREA,
+        MAX_PIECE_CONTOUR_AREA,
+        MIN_PIECE_BBOX_WIDTH,
+        MIN_PIECE_BBOX_HEIGHT,
+    )
 
-    # (x, y, w, h) = cv2.boundingRect(c)
-    white_bboxes = [cv2.boundingRect(c) for c in white_contours]
-    white_contours = [
-        c for c, bbox in zip(white_contours, white_bboxes)
-        if bbox[2] > MIN_PIECE_CONTOUR_WIDTH and bbox[3] > MIN_PIECE_CONTOUR_HEIGHT
-    ]
+    white_bboxes = get_bboxes(white_contours)
+    draw_bboxes(bboxes_img, white_bboxes)
 
-    cv2.drawContours(piece_contours, white_contours, -1, (255, 0, 0), 3)
-
-    filtered_white_bboxes = get_bboxes(white_contours)
-    draw_bboxes(bboxes_img, filtered_white_bboxes)
+    black_bboxes = get_bboxes(black_contours)
+    draw_bboxes(bboxes_img, black_bboxes, (0, 0, 255))
 
     all_contours = white_contours.copy()
+    INCLUDE_BLACK_MASK_CONTOURS = True
+    if INCLUDE_BLACK_MASK_CONTOURS:
+        all_contours.extend(black_contours)
 
     ##===================================================================================##
-    INCLUDE_ADDITIONAL_BBOXES = True
+    INCLUDE_ADDITIONAL_BBOXES = False
     if INCLUDE_ADDITIONAL_BBOXES:
         # Hyperparameters
         MAX_IOU_TO_INCLUDE = 0.5
@@ -1357,7 +1464,7 @@ def process_image(
         else:
             has_piece_bboxes = get_bboxes(has_piece_contours)
             has_piece_bboxes_dicts = bboxes_to_dicts(has_piece_bboxes)
-            white_bboxes_dicts = bboxes_to_dicts(filtered_white_bboxes)
+            white_bboxes_dicts = bboxes_to_dicts(white_bboxes)
 
             additional_contours_from_has_pieces = []
 
@@ -1412,19 +1519,28 @@ def process_image(
             ('grabcut_mask', lambda: final_mask),
             ('grabcut_fg_ratios', lambda: foreground_ratios),
             ('grabcut_hint_mask', lambda: gc_hint_mask_color),
-            ('pieces_black', lambda: black_mask),
+            ('black_pieces_mask', lambda: black_mask),
+            ('black_pieces_mask_morph', lambda: morphological_op_black_mask),
             ('white_pieces_mask', lambda: white_mask),
-            ('white_pieces_mask_morph', lambda: morphological_op_white_mask),
+            ('white_pieces_mask_morph', lambda: final_white_mask),
+            ('white_hue_mask', lambda: white_h_mask),
+            ('white_sat_mask', lambda: white_s_mask),
+            ('white_val_mask', lambda: white_v_mask),
+            ('black_hue_mask', lambda: black_h_mask),
+            ('black_sat_mask', lambda: black_s_mask),
+            ('black_val_mask', lambda: black_v_mask),
             ('bboxes', lambda: bboxes_img),
-            ('piece_contours', lambda: piece_contours),
-            ('hue_mask', lambda: h_mask),
-            ('sat_mask', lambda: s_mask),
-            ('val_mask', lambda: v_mask),
+            ('piece_contours', lambda: piece_contours_img),
             ('otsu_mask', lambda: otsu_mask),
             ('bboxes_orig', lambda: original_bboxes_image),
             ('pieces', lambda: pieces_img),
             ('horse', lambda: horse_img),
             ('rotated', lambda: rotated_img),
+            ('bgr_clahed', lambda: bgr_clahed),
+            ('dist_transform_sure_fg', lambda: dist_transform_sure_fg),
+            ('sure_bg', lambda: sure_bg),
+            ('unknown', lambda: unknown),
+            ('markers', lambda: markers),
         ]
 
         for output_type, get_image in output_handlers:
@@ -1582,8 +1698,14 @@ def process_input(output_dir, output_config, is_delivery: bool = False, eval_pre
     output = []
     for image in data['image_files']:
         image_path = image  # Json should specify specific path
-
-        predictions = process_image(image_path, output_dir, output_config, is_delivery=is_delivery)
+        try:
+            predictions = process_image(image_path, output_dir, output_config, is_delivery=is_delivery)
+        except Exception as e:
+            print(f"Error processing {image_path}: {e}")
+            if is_delivery:
+                continue
+            else:
+                raise e
 
         output.append({
             "image": image_path,
@@ -1683,7 +1805,7 @@ def stitch_images(output_dir, image_type='warped',  grid_size=None, output_filen
     print(f"Stitched {len(images)} {image_type} images into grid {grid_size} at {output_path}")
     return output_path
 
-def main():
+def main(process_all: bool = True):
     # --- Delete output directory if it exists ---
     output_dir = "output_images"
     if os.path.exists(output_dir):
@@ -1701,35 +1823,44 @@ def main():
 
     # --- Configure output options ---
     output_config = {
-        'original': True,
-        'corners': True,
-        'contour': True,
-        'threshold': True,
-        'warped': True,
-        'warped_color': True,
-        'clahe': True,
-        'blurred_warp': True,
-        'canny_edges': True,
-        'dilated': True,
-        'hough_lines': True,
-        'hough_lines_rectified': True,
-        'filtered_intersections': True,
+        'original': False,
+        'corners': False,
+        'threshold': False,
+        'warped': False,
+        'warped_color': False,
+        'clahe': False,
+        'blurred_warp': False,
+        'canny_edges': False,
+        'dilated': False,
+        'hough_lines': False,
+        'hough_lines_rectified': False,
+        'filtered_intersections': False,
         'pieces_gc': True,
         'grabcut_mask': True,
         'grabcut_fg_ratios': True,
         'grabcut_hint_mask': True,
         'otsu_mask': True,
+        'black_pieces_mask': True,
+        'black_pieces_mask_morph': True,
         'white_pieces_mask': True,
         'white_pieces_mask_morph': True,
         'piece_contours': True,
         'bboxes': True,
-        "hue_mask": True,
-        "sat_mask": True,
-        "val_mask": True,
+        "black_hue_mask": True,
+        "black_sat_mask": True,
+        "black_val_mask": True,
+        "white_hue_mask": True,
+        "white_sat_mask": True,
+        "white_val_mask": True,
         'bboxes_orig': True,
         'pieces': True,
-        'horse': True,
-        'rotated': True,
+        'horse': False,
+        'rotated': False,
+        'bgr_clahed': True,
+        'dist_transform_sure_fg': True,
+        'sure_bg': True,
+        'unknown': True,
+        'markers': True,
     }
     for config in output_config:
         for other_config in output_config:
@@ -1738,17 +1869,19 @@ def main():
                     f"""Output config name '{other_config}' ends with the name of '{config}'.
                     No config's name should end with another config's name.""")
 
-    process_all_images(output_dir, output_config, eval_predictions=True)
-    # process_input(output_dir, output_config, is_delivery=False, eval_predictions=True)
+    if process_all:
+        process_all_images(output_dir, output_config, eval_predictions=True)
+    else:
+        process_input(output_dir, output_config, is_delivery=False, eval_predictions=True)
 
     for key, value in output_config.items():
         if value:
             stitch_images(output_dir, image_type=key)
 
 if __name__ == "__main__":
-    #process_input(output_dir=None, output_config={}, is_delivery=True, eval_predictions=False)
+    # process_input(output_dir=None, output_config={}, is_delivery=True, eval_predictions=False)
 
-    main()
+    main(process_all=True)
 
     # Test if labels are being correctly loaded (not used for delivery, just for testing)
     # dataset = get_dataset()
