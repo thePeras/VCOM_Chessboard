@@ -526,9 +526,9 @@ def has_piece_grabcut(resized_img, original_corners, warp_matrix, original_size,
     scale_x = resized_w / orig_w
     scale_y = resized_h / orig_h
 
+    # TODO: This computation outside this function
     a, b = warp_matrix[0, 0], warp_matrix[0, 1]
-    theta = np.arctan2(b, a)
-    angle = np.rad2deg(theta)
+    theta = -np.arctan2(b, a)
 
     # Scale corners to match the resized image
     scaled_corners = [(int(x * scale_x), int(y * scale_y)) for (x, y) in original_corners]
@@ -542,15 +542,13 @@ def has_piece_grabcut(resized_img, original_corners, warp_matrix, original_size,
     rows_idx, cols_idx = np.indices((h, w))
 
     # Ellipse parameters
-    cx, cy = w // 2 - 5, h // 2 - 5
-    a_inner = w // 7  # horizontal semi-axis for inner ellipse
-    b_inner = h // 8  # vertical semi-axis for inner ellipse
-    a_outer = w // 4  # horizontal semi-axis for outer ellipse
-    b_outer = h // 3  # vertical semi-axis for outer ellipse
-
-    # Rotation angle in degrees → convert to radians
-    angle_deg = 30
-    theta = np.deg2rad(angle_deg)
+    cx, cy = w // 2, h // 2 - 5
+    ## inner ellipse
+    a_inner = w // 7
+    b_inner = h // 8
+    # outer ellipse
+    a_outer = w // 4
+    b_outer = h // 3
 
     # Shift coordinates relative to center
     x_shifted = cols_idx - cx
@@ -560,8 +558,11 @@ def has_piece_grabcut(resized_img, original_corners, warp_matrix, original_size,
     x_rot = x_shifted * np.cos(theta) + y_shifted * np.sin(theta)
     y_rot = -x_shifted * np.sin(theta) + y_shifted * np.cos(theta)
 
+    x_rot_inner = x_shifted * np.cos(-theta) + y_shifted * np.sin(-theta)
+    y_rot_inner = -x_shifted * np.sin(-theta) + y_shifted * np.cos(-theta)
+
     # Ellipse equations using rotated coordinates
-    inner_ellipse = (x_rot**2 / a_inner**2 + y_rot**2 / b_inner**2) <= 1
+    inner_ellipse = (x_rot_inner**2 / a_inner**2 + y_rot_inner**2 / b_inner**2) <= 1
     outer_ellipse = (x_rot**2 / a_outer**2 + y_rot**2 / b_outer**2) <= 1
 
     # Initialize GrabCut mask
