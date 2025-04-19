@@ -513,12 +513,6 @@ def has_piece_grabcut(resized_img, original_corners, warp_matrix, original_size,
         has_piece: True if a piece is detected.
         contour: largest contour in resized image coordinates.
     """
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    img_ycrcb = cv2.cvtColor(resized_img, cv2.COLOR_BGR2YCrCb)
-    y, cr, cb = cv2.split(img_ycrcb)
-    y_clahe = clahe.apply(y)
-    img_clahe = cv2.merge([y_clahe, cr, cb])
-    resized_img = cv2.cvtColor(img_clahe, cv2.COLOR_YCrCb2BGR)
 
     # Scaling factors: original -> resized
     orig_w, orig_h = original_size
@@ -1199,6 +1193,14 @@ def process_image(
     warped_img_color_blurred = cv2.GaussianBlur(warped_color_img, (5, 5), 0)
     gc_resized_size = (800, 800)
     warped_img_color_blurred_resized = cv2.resize(warped_img_color_blurred, gc_resized_size)
+    # TODO: Check without blurring
+
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    img_ycrcb = cv2.cvtColor(warped_img_color_blurred_resized, cv2.COLOR_BGR2YCrCb)
+    y, cr, cb = cv2.split(img_ycrcb)
+    y_clahe = clahe.apply(y)
+    img_clahe = cv2.merge([y_clahe, cr, cb])
+    warped_img_color_blurred_resized = cv2.cvtColor(img_clahe, cv2.COLOR_YCrCb2BGR)
 
     final_mask = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
     foreground_ratios = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
