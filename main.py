@@ -499,7 +499,7 @@ def convex_hull_intersection(poly1, poly2):
 ##==================================== Piece detection for each square using GrabCut =========================================##
 
 def has_piece_grabcut(resized_img, original_corners, warp_matrix, original_size, resized_size=(800, 800),
-                      threshold_min=0.15, threshold_max=0.7, iterations=5, nr_pixels_below_piece=10):
+                      threshold_min=0.15, threshold_max=0.55, iterations=5, nr_pixels_below_piece=10):
     """
     Detects if a piece exists in a square using GrabCut on a resized image.
 
@@ -969,6 +969,28 @@ def convert_contours_to_original(original_transform, contours):
 
     return original_contours
 
+
+def get_watershed_contours(markers):
+    watershed_contours = []
+
+    # Skip background (label 1) and boundaries (-1)
+    for label in np.unique(markers):
+        if label <= 1:
+            continue
+
+        # Create a binary mask for the current region
+        region_mask = np.uint8(markers == label)
+
+        # Find contours
+        contours, _ = cv2.findContours(region_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+        # Store the largest contour (or all, up to you)
+        if contours:
+            largest_contour = max(contours, key=cv2.contourArea)
+            watershed_contours.append(largest_contour)
+    return watershed_contours
+
+
 ##====================================== MAIN IMAGE PROCESSING FUNCTION =========================================================##
 
 def process_image(
@@ -1200,9 +1222,15 @@ def process_image(
     gc_resized_size = (800, 800)
     warped_img_color_blurred_resized = cv2.resize(warped_img_color_blurred, gc_resized_size)
 
-    final_mask = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
+    final_gc_mask = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
     foreground_ratios = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
     gc_hint_mask_color = np.zeros_like(warped_color_img, dtype=np.uint8)
+
+    # Initialize the masks
+    sure_fg = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
+    complete_mask = np.ones(warped_color_img.shape[:2], dtype=np.uint8) * 255
+    sure_bg = np.ones(warped_color_img.shape[:2], dtype=np.uint8) * 255
+    unknown = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
 
     has_piece_contours = []
     for i in range(rows):
@@ -1231,8 +1259,13 @@ def process_image(
                 cv2.putText(foreground_ratios, percentage_text, (center_x - 100, center_y + 50),
                             cv2.FONT_HERSHEY_SIMPLEX, 5, (255, 0, 0), 2)
 
-                final_mask = cv2.bitwise_or(final_mask, local_mask)
+                final_gc_mask = cv2.bitwise_or(final_gc_mask, local_mask)
                 gc_hint_mask_color = cv2.bitwise_or(gc_hint_mask_color, hint_local_mask)
+
+                # Create a mask for this square
+                square_mask = np.zeros(img.shape[:2], dtype=np.uint8)
+                cv2.fillPoly(square_mask, [np.array(square_corners, dtype=np.int32)], 255)
+
                 if grabcut_has_piece:
                     board[i][j] = 1
                     has_piece_contours.append(contour)
@@ -1251,12 +1284,65 @@ def process_image(
                     cv2.polylines(pieces_img_gc, [np.array(square_corners)], True, (0, 255, 0), 10)
                     cv2.polylines(foreground_ratios, [np.array(square_corners)], True, 255, 10)
 
- 
+                    # # Use green from the hint mask: sure foreground
+                    # green_mask = (hint_local_mask[..., 1] == 255) & \
+                    #             (hint_local_mask[..., 0] == 0) & \
+                    #             (hint_local_mask[..., 2] == 0)
+                    # sure_fg[green_mask] = 255
+
+                    # # Piece detected, so square is not sure background
+                    # sure_bg = cv2.subtract(sure_bg, square_mask)
+
+                    sure_fg_helper = local_mask.copy() #cv2.erode(local_mask, None, iterations=2)
+                    sure_fg[sure_fg_helper == 255] = 255
+
+                    sure_bg_helper = cv2.bitwise_not(
+                        cv2.dilate(local_mask, None, iterations=30)
+                    )
+                    sure_bg = cv2.bitwise_and(sure_bg, sure_bg_helper)
+                else:
+                    # No piece detected → square is sure background
+                    # sure_bg = cv2.bitwise_and(sure_bg, square_mask)
+                    pass
 
                 # This produced worse results in comparison to grabcut
                 # if has_piece(warped_gray_img, square_corners):
                 #     board[i][j] = 1
                 #     cv2.polylines(pieces_img, [np.array(square_corners)], True, (0, 0, 255), 10)
+
+    # Determine unknown region
+    unknown = cv2.subtract(cv2.subtract(complete_mask, sure_fg), sure_bg)
+    num_markers, markers = cv2.connectedComponents(sure_fg)
+    markers = markers + 1
+    markers[unknown == 255] = 0
+
+    img_for_watershed = warped_color_img.copy()
+    markers = cv2.watershed(img_for_watershed, markers)
+
+    # Create visualization
+    watershed_vis = np.zeros_like(img_for_watershed)
+
+    # Assign random colors to each region
+    colors = np.random.randint(0, 255, (num_markers + 2, 3))
+
+    for label in np.unique(markers):
+        if label == -1:
+            # Watershed boundary in red
+            watershed_vis[markers == label] = [0, 0, 255]
+        elif label == 1:
+            # Background (original background label after shift)
+            watershed_vis[markers == label] = [50, 50, 50]
+        else:
+            watershed_vis[markers == label] = colors[label]
+
+    # Optional overlay: show boundaries on top of original image
+    overlay = warped_color_img.copy()
+    overlay[markers == -1] = [0, 0, 255]  # Red lines for boundaries
+
+    # cv2.imshow("Watershed Segmentation", cv2.resize(watershed_vis, (800, 800)))
+    # cv2.imshow("Watershed Overlay", cv2.resize(overlay, (800, 800)))
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
 
     ##===================== Detect white pieces bounding boxes =========================##
 
@@ -1311,10 +1397,10 @@ def process_image(
     original_bboxes_image = img_color.copy()
 
     # Find contours in white mask
-    contours, _ = cv2.findContours(morphological_op_white_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    white_contours, _ = cv2.findContours(morphological_op_white_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     # Filter contours by area
-    white_contours = [c for c in contours if cv2.contourArea(c) > MIN_PIECE_CONTOUR_AREA]
+    white_contours = [c for c in white_contours if cv2.contourArea(c) > MIN_PIECE_CONTOUR_AREA]
 
     # (x, y, w, h) = cv2.boundingRect(c)
     white_bboxes = [cv2.boundingRect(c) for c in white_contours]
@@ -1330,9 +1416,12 @@ def process_image(
 
     all_contours = white_contours.copy()
 
+    watershed_contours = get_watershed_contours(markers)
+    has_piece_contours = watershed_contours.copy()
+
     ##===================================================================================##
-    INCLUDE_ADDITIONAL_BBOXES = True
-    if INCLUDE_ADDITIONAL_BBOXES:
+    INCLUDE_ADDITIONAL_CONTOURS = True
+    if INCLUDE_ADDITIONAL_CONTOURS:
         # Hyperparameters
         MAX_IOU_TO_INCLUDE = 0.5
         MAX_INTERSECTION_AREA_RATIO_TO_INCLUDE = 0.1    # much stronger filtering than the IOU
@@ -1370,6 +1459,12 @@ def process_image(
             additional_bboxes = get_bboxes(additional_contours_from_has_pieces)
             draw_bboxes(bboxes_img, additional_bboxes, (0, 0, 255))
 
+
+    watershed_piece_contours = warped_color_img.copy()
+    cv2.drawContours(watershed_piece_contours, watershed_contours, -1, (255, 0, 0), 10)
+
+    # all_contours = watershed_contours.copy()
+
     original_contours = convert_contours_to_original(warp_matrix, all_contours)
     original_bboxes = get_bboxes(original_contours)
     draw_bboxes(original_bboxes_image, original_bboxes)
@@ -1396,7 +1491,7 @@ def process_image(
             ('filtered_intersections', lambda: filtered_intersections_img),
             ('pieces_gc', lambda: pieces_img_gc),
             ('warped_color', lambda: warped_color_img),
-            ('grabcut_mask', lambda: final_mask),
+            ('grabcut_mask', lambda: final_gc_mask),
             ('grabcut_fg_ratios', lambda: foreground_ratios),
             ('grabcut_hint_mask', lambda: gc_hint_mask_color),
             ('pieces_black', lambda: black_mask),
@@ -1407,11 +1502,16 @@ def process_image(
             ('hue_mask', lambda: h_mask),
             ('sat_mask', lambda: s_mask),
             ('val_mask', lambda: v_mask),
-            ('otsu_mask', lambda: otsu_mask),
             ('bboxes_orig', lambda: original_bboxes_image),
             ('pieces', lambda: pieces_img),
             ('horse', lambda: horse_img),
             ('rotated', lambda: rotated_img),
+            ('sure_fg', lambda: sure_fg),
+            ('sure_bg', lambda: sure_bg),
+            ('unknown', lambda: unknown),
+            ('overlay', lambda: overlay),
+            ('watershed_vis', lambda: watershed_vis),
+            ('contours_watershed', lambda: watershed_piece_contours),
         ]
 
         for output_type, get_image in output_handlers:
@@ -1526,7 +1626,7 @@ def process_all_images(
             lambda x: os.path.splitext(os.path.basename(x))[0]
         )
         sorted_evals = evaluations  # apply a filter if desired
-        sorted_evals = sorted_evals.sort_values(by="board", ascending=False)
+        sorted_evals = sorted_evals.sort_values(by="bboxes", ascending=False)
 
         if show_all_images and output_config.get("corners", False):
             for image_path in sorted_evals["clickable_image_path"]:
@@ -1705,7 +1805,6 @@ def main():
         'grabcut_mask': True,
         'grabcut_fg_ratios': True,
         'grabcut_hint_mask': True,
-        'otsu_mask': False,
         'white_pieces_mask': False,
         'white_pieces_mask_morph': False,
         'piece_contours': False,
@@ -1717,6 +1816,12 @@ def main():
         'pieces': False,
         'horse': False,
         'rotated': False,
+        'sure_fg': True,
+        'sure_bg': True,
+        'unknown': True,
+        'watershed_vis': True,
+        'overlay': True,
+        'contours_watershed': True,
     }
     for config in output_config:
         for other_config in output_config:
@@ -1725,8 +1830,8 @@ def main():
                     f"""Output config name '{other_config}' ends with the name of '{config}'.
                     No config's name should end with another config's name.""")
 
-    # process_all_images(output_dir, output_config, eval_predictions=True)
-    process_input(output_dir, output_config, is_delivery=False, eval_predictions=True)
+    process_all_images(output_dir, output_config, eval_predictions=True)
+    # process_input(output_dir, output_config, is_delivery=False, eval_predictions=True)
 
     for key, value in output_config.items():
         if value:
