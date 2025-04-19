@@ -301,7 +301,7 @@ def evaluate_predictions(
     bbox_scores = 0
     if eval_num_pieces:
         # Eval number of pieces
-        num_pieces_diff = abs(true_num_pieces - pred_num_pieces)
+        num_pieces_diff += abs(true_num_pieces - pred_num_pieces)
         if verbose:
             print(f"Num pieces diff: {num_pieces_diff}")
 
@@ -864,62 +864,6 @@ def filter_intersections_by_distance(intersections, center):
     
     return filtered_intersections, square_side
 
-def has_piece(image, square_vertices) -> bool:  # TODO: Improve this algorithm
-    # Create a mask for the square region
-    mask = np.zeros(image.shape, dtype=np.uint8)
-    pts = np.array([square_vertices], dtype=np.int32)
-    cv2.fillPoly(mask, pts, 255)
-    
-    # Extract the square region using the mask
-    square_region = cv2.bitwise_and(image, image, mask=mask)
-    
-    # Get bounding box of the square for cropping
-    x_coords = [p[0] for p in square_vertices]
-    y_coords = [p[1] for p in square_vertices]
-    x_min, x_max = max(0, min(x_coords)), min(image.shape[1], max(x_coords))
-    y_min, y_max = max(0, min(y_coords)), min(image.shape[0], max(y_coords))
-    
-    # Crop to bounding box
-    cropped = square_region[y_min:y_max, x_min:x_max]
-    if cropped.size == 0:
-        return False
-    
-    # Apply thresholding to separate pieces from background
-    _, thresh = cv2.threshold(cropped, 120, 255, cv2.THRESH_BINARY_INV)
-    
-    # Apply morphological operations to clean up noise
-    kernel = np.ones((3, 3), np.uint8)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-    
-    # Find contours in the thresholded image
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    if not contours:
-        return False
-    
-    # Calculate the area of the square
-    square_area = (x_max - x_min) * (y_max - y_min)
-    
-    # Check for sufficiently large contours that could be pieces
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        # A piece should occupy a significant portion of the square but not too much
-        area_ratio = area / square_area
-        
-        if 0.05 < area_ratio < 0.8:
-            # Calculate circularity/roundness of the contour
-            perimeter = cv2.arcLength(contour, True)
-            if perimeter > 0:
-                circularity = 4 * np.pi * area / (perimeter * perimeter)
-                
-                # Ellipses/circles have circularity closer to 1
-                # But incomplete ellipses will have lower values
-                if 0.2 < circularity < 0.9:
-                    return True
-    
-    return False
-
-
 ##================================= Helpers to get piece bounding boxes ============================================##
 
 def get_hsv_masks(warped_hsv, hue_th, sat_th, val_th, apply_clahe=True):
@@ -1048,15 +992,13 @@ def get_watershed_contours(markers):
             watershed_contours.append(largest_contour)
     return watershed_contours
 
-def find_contours_in_mask(
-    mask_img,
+def filter_contours(
+    contours,
     min_piece_contour_area: int,
     max_piece_contour_area: int,
     min_piece_bbox_width: int,
     min_piece_bbox_height: int,
 ):
-    contours, _ = cv2.findContours(mask_img, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
     # Filter contours by area
     contour_areas = [cv2.contourArea(c) for c in contours]
     contour_ch_areas = [cv2.contourArea(cv2.convexHull(c)) for c in contours]
@@ -1068,11 +1010,16 @@ def find_contours_in_mask(
 
     # (x, y, w, h) = cv2.boundingRect(c)
     bboxes = [cv2.boundingRect(c) for c in contours]
+
     # Filter contours by bbox width and height
     contours = [
         c for c, bbox in zip(contours, bboxes)
         if bbox[2] > min_piece_bbox_width and bbox[3] > min_piece_bbox_height
     ]
+    return contours
+
+def find_contours_in_mask(mask_img):
+    contours, _ = cv2.findContours(mask_img, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     return contours
 
 ##================================= Converting contours/bboxes back to original space ============================================##
@@ -1389,6 +1336,7 @@ def process_image(
 
                 pts = np.array(square_corners, dtype=np.int32)
                 rect = cv2.boundingRect(pts)
+                # Draw foreground ratio from GrabCut
                 center_x = rect[0] + rect[2] // 2
                 center_y = rect[1] + rect[3] // 2
                 percentage_text = f"{fg_ratio*100:.0f}"
@@ -1441,14 +1389,9 @@ def process_image(
                     # sure_bg = cv2.bitwise_and(sure_bg, square_mask)
                     pass
 
-                # This produced worse results in comparison to grabcut
-                # if has_piece(warped_gray_img, square_corners):
-                #     board[i][j] = 1
-                #     cv2.polylines(pieces_img, [np.array(square_corners)], True, (0, 0, 255), 10)
-
     ##===================== Detect pieces bounding boxes =========================##
 
-    # Determine unknown region
+    # Determine unknown region (for watershed, based on GrabCut results)
     gc_watershed_unknown = cv2.subtract(cv2.subtract(gc_watershed_complete_mask, gc_watershed_sure_fg), gc_watershed_sure_bg)
     num_markers, markers = cv2.connectedComponents(gc_watershed_sure_fg)
     markers = markers + 1
@@ -1488,8 +1431,9 @@ def process_image(
     original_bboxes_image = img_color.copy()
 
     # Find contours in white mask
-    white_contours = find_contours_in_mask(
-        final_white_mask,
+    white_contours = find_contours_in_mask(final_white_mask)
+    white_contours = filter_contours(
+        white_contours,
         MIN_PIECE_CONTOUR_AREA,
         MAX_PIECE_CONTOUR_AREA,
         MIN_PIECE_BBOX_WIDTH,
@@ -1497,8 +1441,9 @@ def process_image(
     )
     cv2.drawContours(piece_contours_img, white_contours, -1, (255, 0, 0), 5)
 
-    black_contours = find_contours_in_mask(
-        final_black_mask,
+    black_contours = find_contours_in_mask(final_black_mask)
+    black_contours = filter_contours(
+        black_contours,
         MIN_PIECE_CONTOUR_AREA,
         MAX_PIECE_CONTOUR_AREA,
         MIN_PIECE_BBOX_WIDTH,
@@ -1519,8 +1464,16 @@ def process_image(
         all_contours.extend(black_contours)
 
     watershed_contours = get_watershed_contours(markers)
+    watershed_contours = filter_contours(
+        watershed_contours,
+        MIN_PIECE_CONTOUR_AREA,
+        MAX_PIECE_CONTOUR_AREA,
+        MIN_PIECE_BBOX_WIDTH,
+        MIN_PIECE_BBOX_HEIGHT,
+    )
     has_piece_contours = watershed_contours.copy()
 
+    all_bboxes = get_bboxes(all_contours)
     ##===================================================================================##
     INCLUDE_ADDITIONAL_CONTOURS = False
     if INCLUDE_ADDITIONAL_CONTOURS:
