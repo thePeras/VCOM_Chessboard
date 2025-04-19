@@ -822,8 +822,10 @@ def compute_intersections(verticals, horizontals):
 def filter_intersections_by_distance(intersections, center):
     """
     Choose the 81 intersections that are closest to the center of the board,
-    ensuring each point is at least 250 pixels away from any other selected point.
+    ensuring each point is at least 270 pixels away from any other selected point.
     """
+    MIN_DISTANCE_BETWEEN_2_POINTS = 270
+
     x_center, y_center = center
     distances = []
     for point in intersections:
@@ -841,7 +843,7 @@ def filter_intersections_by_distance(intersections, center):
             x1, y1 = point
             x2, y2 = selected_point
             distance = math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
-            if distance < 250:
+            if distance < MIN_DISTANCE_BETWEEN_2_POINTS:
                 valid_point = False
                 break
         
@@ -854,7 +856,9 @@ def filter_intersections_by_distance(intersections, center):
     square_side = int(math.sqrt(len(filtered_intersections)))
     
     if len(filtered_intersections) < 81:
-        print(f"Warning: Only found {len(filtered_intersections)} valid intersections with minimum distance of 250 pixels")
+        print(
+            f"Warning: Only found {len(filtered_intersections)} valid intersections with minimum distance of {MIN_DISTANCE_BETWEEN_2_POINTS} pixels"
+        )
     
     return filtered_intersections, square_side
 
@@ -1867,7 +1871,7 @@ def main(process_all: bool = True):
         'dilated': False,
         'hough_lines': False,
         'hough_lines_rectified': False,
-        'filtered_intersections': False,
+        'filtered_intersections': True,
         'pieces_gc': True,
         'grabcut_mask': True,
         'grabcut_fg_ratios': True,
