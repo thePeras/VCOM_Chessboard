@@ -498,7 +498,7 @@ def convex_hull_intersection(poly1, poly2):
 
 ##==================================== Piece detection for each square using GrabCut =========================================##
 
-def has_piece_grabcut(resized_img, original_corners, original_size, resized_size=(800, 800),
+def has_piece_grabcut(resized_img, original_corners, warp_matrix, original_size, resized_size=(800, 800),
                       threshold_min=0.15, threshold_max=0.7, iterations=5, nr_pixels_below_piece=10):
     """
     Detects if a piece exists in a square using GrabCut on a resized image.
@@ -513,11 +513,16 @@ def has_piece_grabcut(resized_img, original_corners, original_size, resized_size
         has_piece: True if a piece is detected.
         contour: largest contour in resized image coordinates.
     """
+
     # Scaling factors: original -> resized
     orig_w, orig_h = original_size
     resized_h, resized_w = resized_img.shape[:2]
     scale_x = resized_w / orig_w
     scale_y = resized_h / orig_h
+
+    # TODO: This computation outside this function
+    a, b = warp_matrix[0, 0], warp_matrix[0, 1]
+    theta = -np.arctan2(b, a)
 
     # Scale corners to match the resized image
     scaled_corners = [(int(x * scale_x), int(y * scale_y)) for (x, y) in original_corners]
@@ -527,34 +532,40 @@ def has_piece_grabcut(resized_img, original_corners, original_size, resized_size
     x, y, w, h = cv2.boundingRect(pts)
     square_img = resized_img[y:y+h, x:x+w]
 
-    # Create GrabCut mask
-    mask = np.full((h, w), cv2.GC_EVAL, dtype=np.uint8)
-    cx, cy = w // 2, h // 2
-    radius = min(w, h) // 6
-    outer_radius = min(w, h) // 2.8
-    cv2.circle(mask, (cx, cy), radius, cv2.GC_FGD, -1)
-
-    # Create coordinate indices for the ROI.
+    # Create coordinate indices
     rows_idx, cols_idx = np.indices((h, w))
-    # Compute the Euclidean distance from each pixel to the ROI center.
-    distance = np.sqrt((cols_idx - cx)**2 + (rows_idx - cy)**2)
-    
-    # Initialize the mask: all pixels are set to probable background.
-    mask = np.full((h, w), cv2.GC_PR_FGD, dtype=np.uint8)
-    # Inside the circle (distance <= piece_radius), mark as definite foreground.
-    mask[distance <= radius] = cv2.GC_PR_FGD
 
-    border_thickness = 10
-    mask[:border_thickness, :] = cv2.GC_PR_BGD
-    mask[-border_thickness:, :] = cv2.GC_PR_BGD
-    mask[:, :border_thickness] = cv2.GC_PR_BGD
-    mask[:, -border_thickness:] = cv2.GC_PR_BGD
+    # Ellipse parameters
+    cx, cy = w // 2, h // 2 - 5
+    ## inner ellipse
+    a_inner = w // 7
+    b_inner = h // 8
+    # outer ellipse
+    a_outer = w // 4
+    b_outer = h // 3
 
-    # Outside the circle—but only in the lower half (rows below the center) mark as definite background.
-    mask[(distance > outer_radius) & (rows_idx > cy)] = cv2.GC_PR_BGD
-    mask[-nr_pixels_below_piece:, :] = cv2.GC_PR_BGD
+    # Shift coordinates relative to center
+    x_shifted = cols_idx - cx
+    y_shifted = rows_idx - cy
+
+    # Rotate coordinates
+    x_rot = x_shifted * np.cos(theta) + y_shifted * np.sin(theta)
+    y_rot = -x_shifted * np.sin(theta) + y_shifted * np.cos(theta)
+
+    x_rot_inner = x_shifted * np.cos(-theta) + y_shifted * np.sin(-theta)
+    y_rot_inner = -x_shifted * np.sin(-theta) + y_shifted * np.cos(-theta)
+
+    # Ellipse equations using rotated coordinates
+    inner_ellipse = (x_rot_inner**2 / a_inner**2 + y_rot_inner**2 / b_inner**2) <= 1
+    outer_ellipse = (x_rot**2 / a_outer**2 + y_rot**2 / b_outer**2) <= 1
+
+    # Initialize GrabCut mask
+    mask = np.full((h, w), cv2.GC_PR_BGD, dtype=np.uint8)
+    mask[outer_ellipse] = cv2.GC_PR_FGD
+    mask[inner_ellipse] = cv2.GC_FGD
 
     hint_mask = mask.copy()
+    
     # Run GrabCut
     bgModel = np.zeros((1, 65), dtype=np.float64)
     fgModel = np.zeros((1, 65), dtype=np.float64)
@@ -614,37 +625,7 @@ def has_piece_grabcut(resized_img, original_corners, original_size, resized_size
     hint_overall_mask_color = np.zeros((orig_h, orig_w, 3), dtype=np.uint8)
     hint_overall_mask_color[orig_roi_y:orig_roi_y+orig_roi_h, orig_roi_x:orig_roi_x+orig_roi_w] = colored_hint_resized
 
-    # Apply Otsu's binarization on the square image
-    square_img_gray = cv2.cvtColor(square_img, cv2.COLOR_BGR2GRAY)
-    _, otsu_mask = cv2.threshold(square_img_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    # This produced slightly worse results than just using grabcut
-    """
-    unique_vals, counts = np.unique(otsu_mask, return_counts=True)
-    MIN_RATIO_TO_DETECT_PIECE = 0.2
-    img_size = square_img_gray.shape[0] * square_img_gray.shape[1]
-    min_pxs_to_detect_piece = MIN_RATIO_TO_DETECT_PIECE * img_size
-    if counts[0] > min_pxs_to_detect_piece and counts[1] > min_pxs_to_detect_piece:
-        has_piece = True
-    else:
-        has_piece = False
-    """
-
-    otsu_mask = cv2.cvtColor(otsu_mask, cv2.COLOR_GRAY2BGR)  # Convert to 3 channels to match the final output
-
-    # Resize the Otsu mask back to original ROI size
-    otsu_resized = cv2.resize(otsu_mask, (orig_roi_w, orig_roi_h), interpolation=cv2.INTER_NEAREST)
-
-    # Create an overall Otsu color mask for the entire original image size
-    overall_otsu_color = np.zeros((orig_h, orig_w, 3), dtype=np.uint8)
-    overall_otsu_color[orig_roi_y:orig_roi_y+orig_roi_h, orig_roi_x:orig_roi_x+orig_roi_w] = otsu_resized
-
-    # Apply K-means clustering to the square image (assumes a 2D color space)
-    square_img_reshaped = square_img.reshape((-1, 3))  # Reshape to (N, 3) where N is the number of pixels
-    square_img_reshaped = np.float32(square_img_reshaped)  # Convert to float32 for K-means
-
-
-    return has_piece, largest_contour, hint_overall_mask_color, overall_mask * 255, foreground_ratio, overall_otsu_color
+    return has_piece, largest_contour, hint_overall_mask_color, overall_mask * 255, foreground_ratio
 
 ##==================================== Horse to detect the chessboard orientation ================================================##
 
@@ -1212,11 +1193,18 @@ def process_image(
     warped_img_color_blurred = cv2.GaussianBlur(warped_color_img, (5, 5), 0)
     gc_resized_size = (800, 800)
     warped_img_color_blurred_resized = cv2.resize(warped_img_color_blurred, gc_resized_size)
+    # TODO: Check without blurring
+
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    img_ycrcb = cv2.cvtColor(warped_img_color_blurred_resized, cv2.COLOR_BGR2YCrCb)
+    y, cr, cb = cv2.split(img_ycrcb)
+    y_clahe = clahe.apply(y)
+    img_clahe = cv2.merge([y_clahe, cr, cb])
+    warped_img_color_blurred_resized = cv2.cvtColor(img_clahe, cv2.COLOR_YCrCb2BGR)
 
     final_mask = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
     foreground_ratios = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
     gc_hint_mask_color = np.zeros_like(warped_color_img, dtype=np.uint8)
-    otsu_mask = np.zeros_like(warped_color_img, dtype=np.uint8)
 
     has_piece_contours = []
     for i in range(rows):
@@ -1228,9 +1216,11 @@ def process_image(
                     filtered_intersections[(i + 1) * step + j + 1],
                     filtered_intersections[(i + 1) * step + j],
                 ]
-                grabcut_has_piece, contour, hint_local_mask, local_mask, fg_ratio, otsu_result = has_piece_grabcut(
+
+                grabcut_has_piece, contour, hint_local_mask, local_mask, fg_ratio = has_piece_grabcut(
                     warped_img_color_blurred_resized,
                     square_corners,
+                    warp_matrix,
                     original_size=img.shape,
                     resized_size=gc_resized_size,
                 )
@@ -1245,7 +1235,6 @@ def process_image(
 
                 final_mask = cv2.bitwise_or(final_mask, local_mask)
                 gc_hint_mask_color = cv2.bitwise_or(gc_hint_mask_color, hint_local_mask)
-                otsu_mask = cv2.bitwise_or(otsu_mask, otsu_result)
                 if grabcut_has_piece:
                     board[i][j] = 1
                     has_piece_contours.append(contour)
@@ -1702,34 +1691,34 @@ def main():
     # --- Configure output options ---
     output_config = {
         'original': True,
-        'corners': True,
-        'contour': True,
-        'threshold': True,
-        'warped': True,
+        'corners': False,
+        'contour': False,
+        'threshold': False,
+        'warped': False,
         'warped_color': True,
-        'clahe': True,
-        'blurred_warp': True,
-        'canny_edges': True,
-        'dilated': True,
-        'hough_lines': True,
-        'hough_lines_rectified': True,
-        'filtered_intersections': True,
+        'clahe': False,
+        'blurred_warp': False,
+        'canny_edges': False,
+        'dilated': False,
+        'hough_lines': False,
+        'hough_lines_rectified': False,
+        'filtered_intersections': False,
         'pieces_gc': True,
         'grabcut_mask': True,
         'grabcut_fg_ratios': True,
         'grabcut_hint_mask': True,
-        'otsu_mask': True,
-        'white_pieces_mask': True,
-        'white_pieces_mask_morph': True,
-        'piece_contours': True,
+        'otsu_mask': False,
+        'white_pieces_mask': False,
+        'white_pieces_mask_morph': False,
+        'piece_contours': False,
         'bboxes': True,
-        "hue_mask": True,
-        "sat_mask": True,
-        "val_mask": True,
+        "hue_mask": False,
+        "sat_mask": False,
+        "val_mask": False,
         'bboxes_orig': True,
-        'pieces': True,
-        'horse': True,
-        'rotated': True,
+        'pieces': False,
+        'horse': False,
+        'rotated': False,
     }
     for config in output_config:
         for other_config in output_config:
@@ -1738,8 +1727,8 @@ def main():
                     f"""Output config name '{other_config}' ends with the name of '{config}'.
                     No config's name should end with another config's name.""")
 
-    process_all_images(output_dir, output_config, eval_predictions=True)
-    # process_input(output_dir, output_config, is_delivery=False, eval_predictions=True)
+    # process_all_images(output_dir, output_config, eval_predictions=True)
+    process_input(output_dir, output_config, is_delivery=False, eval_predictions=True)
 
     for key, value in output_config.items():
         if value:
