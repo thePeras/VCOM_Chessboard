@@ -927,11 +927,8 @@ def get_hsv_masks(warped_hsv, hue_th, sat_th, val_th, apply_clahe=True):
     sl, su = sat_th
     vl, vu = val_th
 
-    # lower = np.array([hl, sl, vl])
-    # upper = np.array([hu, su, vu])
-    # white_mask = cv2.inRange(warped_hsv, lower, upper)
+    # Instead of thresholding everything at once with cv2.inRange(), do it individually
 
-    # Instead of thresholding everything at once, do it individually
     # Split channels
     h, s, v = cv2.split(warped_hsv)
     if apply_clahe:
@@ -964,18 +961,6 @@ def get_hsv_masks(warped_hsv, hue_th, sat_th, val_th, apply_clahe=True):
     return mask, (h_mask, s_mask, v_mask)
 
 
-def get_white_pieces_mask(warped_hsv):
-    whue = 15, 40    # hue ~ yellow, saturation > X, value > Y
-    wsat = 25, 255
-    wval = 100, 255
-    white_mask, (h_mask, s_mask, v_mask) = get_hsv_masks(warped_hsv, whue, wsat, wval, apply_clahe=False)
-
-    final_white_mask = cv2.erode(white_mask, None, iterations=5)
-    final_white_mask = cv2.dilate(final_white_mask, None, iterations=5)
-
-    return final_white_mask, white_mask, (h_mask, s_mask, v_mask)
-
-
 def visualize_watershed_mask(sure_fg, sure_bg, unknown):
     # Convert all inputs to boolean masks
     fg_mask = sure_fg > 0
@@ -992,6 +977,18 @@ def visualize_watershed_mask(sure_fg, sure_bg, unknown):
 
     return hint_mask
 
+def get_white_pieces_mask(warped_hsv):
+    whue = 15, 40    # hue ~ yellow, saturation > X, value > Y
+    wsat = 25, 255
+    wval = 100, 255
+    white_mask, (h_mask, s_mask, v_mask) = get_hsv_masks(warped_hsv, whue, wsat, wval, apply_clahe=False)
+
+    final_white_mask = cv2.erode(white_mask, None, iterations=5)
+    final_white_mask = cv2.dilate(final_white_mask, None, iterations=5)
+
+    return final_white_mask, white_mask, (h_mask, s_mask, v_mask)
+
+
 def get_black_pieces_mask(warped_hsv, warped_img_color_blurred):
     bhue = 0, 255
     bsat = 0, 80
@@ -999,10 +996,10 @@ def get_black_pieces_mask(warped_hsv, warped_img_color_blurred):
     black_mask, (h_mask, s_mask, v_mask) = get_hsv_masks(warped_hsv, bhue, bsat, bval)
 
     black_mask_morph = cv2.dilate(black_mask, None, iterations=15)
-    # morphological_op_black_mask = cv2.erode(morphological_op_black_mask, None, iterations=12)
 
-    # morphological_op_black_mask = cv2.morphologyEx(morphological_op_black_mask, cv2.MORPH_CLOSE, kernel, iterations=5)
-    # morphological_op_black_mask = cv2.erode(morphological_op_black_mask, None, iterations=10)
+    # black_mask_morph = cv2.erode(black_mask_morph, None, iterations=12)
+    # black_mask_morph = cv2.morphologyEx(black_mask_morph, cv2.MORPH_CLOSE, kernel, iterations=5)
+    # black_mask_morph = cv2.erode(black_mask_morph, None, iterations=10)
 
     dist_transform = cv2.distanceTransform(black_mask_morph, cv2.DIST_L2, 5)
     _, sure_fg = cv2.threshold(dist_transform, 0.4*dist_transform.max(), 255, cv2.THRESH_BINARY)
@@ -1365,7 +1362,7 @@ def process_image(
     foreground_ratios = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
     gc_hint_mask_color = np.zeros_like(warped_color_img, dtype=np.uint8)
 
-    # Initialize the masks
+    # Initialize the watershed hint masks
     gc_watershed_sure_fg = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
     gc_watershed_complete_mask = np.ones(warped_color_img.shape[:2], dtype=np.uint8) * 255
     gc_watershed_sure_bg = np.ones(warped_color_img.shape[:2], dtype=np.uint8) * 255
@@ -1483,77 +1480,8 @@ def process_image(
         get_white_pieces_mask(warped_hsv)
     )
     final_black_mask, black_mask, black_mask_morph, black_pieces_watershed_mask, (black_h_mask, black_s_mask, black_v_mask) = (
-        get_black_pieces_mask(warped_hsv, warped_img_color_blurred)
+        get_black_pieces_mask(warped_hsv, warped_color_img)
     )
-
-    # # Instead of thresholding everything at once, do it individually
-    # # Split channels
-    # h, s, v = cv2.split(warped_hsv)
-    # l, _, _ = cv2.split(warped_lab)
-
-    # # Apply CLAHE
-    # s = clahe.apply(s)
-    # v = clahe.apply(v)
-    # l = clahe.apply(l)
-
-    # hsv_clahed = cv2.merge((h, s, v))
-    # bgr_clahed = cv2.cvtColor(hsv_clahed, cv2.COLOR_HSV2BGR)
-
-    # bhl, bhu = 0, 255
-    # bsl, bsu = 0, 80
-    # bvl, bvu = 0, 80
-    # # black_lower = np.array([0, 0, 0])
-    # # black_upper = np.array([180, 50, 80])  # saturation < 100, value < 80
-    # # black_lower = np.array([bhl, bsl, bvl])
-    # # black_upper = np.array([bhu, bsu, bvu])
-    # # black_mask = cv2.inRange(warped_hsv, black_lower, black_upper)
-
-    # black_h_mask = (h >= bhl) & (h <= bhu)
-    # black_s_mask = (s >= bsl) & (s <= bsu)
-    # black_v_mask = (l >= bvl) & (l <= bvu)
-    # black_hsv_mask = black_h_mask & black_s_mask & black_v_mask
-    # black_mask = (black_hsv_mask.astype(np.uint8)) * 255
-
-    # # Debugging purposes
-    # black_h_mask = np.uint8(black_h_mask) * 255
-    # black_s_mask = np.uint8(black_s_mask) * 255
-    # black_v_mask = np.uint8(black_v_mask) * 255
-
-    # black_mask_morph = cv2.dilate(black_mask, None, iterations=15)
-    # # morphological_op_black_mask = cv2.erode(morphological_op_black_mask, None, iterations=12)
-
-    # # morphological_op_black_mask = cv2.morphologyEx(morphological_op_black_mask, cv2.MORPH_CLOSE, kernel, iterations=5)
-    # # morphological_op_black_mask = cv2.erode(morphological_op_black_mask, None, iterations=10)
-
-    # # black_mask = cv2.erode(black_mask, None, iterations=2)
-    # # black_mask = cv2.dilate(black_mask, None, iterations=2)
-    # # # make it more blob-like (using morphology)
-    # # kernel = np.ones((5, 5), np.uint8)
-    # # black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel, iterations=20)
-
-    # dist_transform = cv2.distanceTransform(black_mask_morph, cv2.DIST_L2, 5)
-    # _, dist_transform_sure_fg = cv2.threshold(dist_transform, 0.4*dist_transform.max(), 255, 0)
-
-    # dist_transform_sure_fg = np.uint8(dist_transform_sure_fg)
-    # sure_bg = cv2.dilate(black_mask_morph, None, iterations=5)
-    # unknown = cv2.subtract(sure_bg, dist_transform_sure_fg)
-
-    # # Marker labelling
-    # ret, markers = cv2.connectedComponents(dist_transform_sure_fg)
-
-    # # Add one to all labels so that sure background is not 0, but 1
-    # markers = markers + 1
-
-    # # Now, mark the region of unknown with zero
-    # markers[unknown==255] = 0
-
-    # markers = cv2.watershed(warped_img_color_blurred, markers)
-    # markers[markers > 1] = 255
-    # markers[markers == 1] = 0
-    # markers = np.uint8(markers)
-
-    # sure_bg = np.uint8(sure_bg)
-    # dist_transform_sure_fg = np.uint8(dist_transform_sure_fg)
 
     piece_contours_img = warped_color_img.copy()
     bboxes_img = warped_color_img.copy()
@@ -1576,6 +1504,7 @@ def process_image(
         MIN_PIECE_BBOX_WIDTH,
         MIN_PIECE_BBOX_HEIGHT,
     )
+    cv2.drawContours(piece_contours_img, white_contours, -1, (0, 0, 255), 5)
 
     white_bboxes = get_bboxes(white_contours)
     draw_bboxes(bboxes_img, white_bboxes)
