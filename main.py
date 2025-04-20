@@ -142,7 +142,7 @@ def from_annotation_to_output_json(image_name, annotation):
 
     return ans
 
-
+# To check if the annotations of each image make sense
 def draw_annotations(image_name, image_path, dataset):
     image_annotations = get_annotations_by_image_name(image_name, dataset)
 
@@ -556,8 +556,16 @@ def has_piece_grabcut(resized_img, original_corners, warp_matrix, original_size,
     y_rot_inner = -x_shifted * np.sin(-theta) + y_shifted * np.cos(-theta)
 
     # Ellipse equations using rotated coordinates
-    inner_ellipse = (x_rot_inner**2 / a_inner**2 + y_rot_inner**2 / b_inner**2) <= 1
-    outer_ellipse = (x_rot**2 / a_outer**2 + y_rot**2 / b_outer**2) <= 1
+    # Avoid division by 0
+    if a_inner != 0 and b_inner != 0:
+        inner_ellipse = (x_rot_inner**2 / a_inner**2 + y_rot_inner**2 / b_inner**2) <= 1
+    else:
+        inner_ellipse = np.zeros_like(x_rot_inner, dtype=bool)
+
+    if a_outer != 0 and b_outer != 0:
+        outer_ellipse = (x_rot**2 / a_outer**2 + y_rot**2 / b_outer**2) <= 1
+    else:
+        outer_ellipse = np.zeros_like(x_rot, dtype=bool)
 
     # Initialize GrabCut mask
     mask = np.full((h, w), cv2.GC_PR_BGD, dtype=np.uint8)
@@ -569,7 +577,14 @@ def has_piece_grabcut(resized_img, original_corners, warp_matrix, original_size,
     # Run GrabCut
     bgModel = np.zeros((1, 65), dtype=np.float64)
     fgModel = np.zeros((1, 65), dtype=np.float64)
-    cv2.grabCut(square_img, mask, None, bgModel, fgModel, iterations, cv2.GC_INIT_WITH_MASK)
+
+    # Don't call grabCut if the masks were not properly built
+    if (
+        np.any(mask == cv2.GC_FGD) or np.any(mask == cv2.GC_PR_FGD)
+    ) and (
+        np.any(mask == cv2.GC_BGD) or np.any(mask == cv2.GC_PR_BGD)
+    ):
+        cv2.grabCut(square_img, mask, None, bgModel, fgModel, iterations, cv2.GC_INIT_WITH_MASK)
 
     result_mask = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 1, 0).astype("uint8")
     foreground_ratio = np.sum(result_mask) / float(w * h)
@@ -834,7 +849,7 @@ def filter_intersections_by_distance(intersections, center):
         distances.append((distance, point))
 
     distances.sort(key=lambda x: x[0])
-    
+
     filtered_intersections = [distances[0][1]]
     
     for _, point in distances[1:]:
@@ -854,7 +869,7 @@ def filter_intersections_by_distance(intersections, center):
             break
     
     square_side = int(math.sqrt(len(filtered_intersections)))
-    
+
     if len(filtered_intersections) < 81:
         print(
             f"Warning: Only found {len(filtered_intersections)} valid intersections with minimum distance of {MIN_DISTANCE_BETWEEN_2_POINTS} pixels"
@@ -903,7 +918,7 @@ def get_hsv_masks(warped_hsv, hue_th, sat_th, val_th, apply_clahe=True):
     return mask, (h_mask, s_mask, v_mask)
 
 
-def visualize_watershed_mask(sure_fg, sure_bg, unknown):
+def create_watershed_hint_visualization(sure_fg, sure_bg, unknown):
     # Convert all inputs to boolean masks
     fg_mask = sure_fg > 0
     bg_mask = sure_bg > 0
@@ -913,8 +928,8 @@ def visualize_watershed_mask(sure_fg, sure_bg, unknown):
     hint_mask = np.zeros((sure_fg.shape[0], sure_fg.shape[1], 3), dtype=np.uint8)
 
     # Apply color coding 
-    hint_mask[bg_mask] = [255, 0, 0]        # Blue for background
-    hint_mask[fg_mask] = [0, 255, 0]        # Green for foreground
+    hint_mask[bg_mask] = [150, 0, 0]        # Dark Blue for background
+    hint_mask[fg_mask] = [0, 150, 0]        # Dark Green for foreground
     hint_mask[unknown_mask] = [0, 0, 255]   # Red for unknown
 
     return hint_mask
@@ -939,10 +954,6 @@ def get_black_pieces_mask(warped_hsv, warped_img_color_blurred):
 
     black_mask_morph = cv2.dilate(black_mask, None, iterations=15)
 
-    # black_mask_morph = cv2.erode(black_mask_morph, None, iterations=12)
-    # black_mask_morph = cv2.morphologyEx(black_mask_morph, cv2.MORPH_CLOSE, kernel, iterations=5)
-    # black_mask_morph = cv2.erode(black_mask_morph, None, iterations=10)
-
     dist_transform = cv2.distanceTransform(black_mask_morph, cv2.DIST_L2, 5)
     _, sure_fg = cv2.threshold(dist_transform, 0.4*dist_transform.max(), 255, cv2.THRESH_BINARY)
 
@@ -965,7 +976,7 @@ def get_black_pieces_mask(warped_hsv, warped_img_color_blurred):
     markers = np.uint8(markers)
 
     final_black_mask = markers
-    watershed_hint_mask = visualize_watershed_mask(sure_fg, sure_bg, unknown)
+    watershed_hint_mask = create_watershed_hint_visualization(sure_fg, sure_bg, unknown)
 
     return final_black_mask, black_mask, black_mask_morph, watershed_hint_mask, (h_mask, s_mask, v_mask)
 
@@ -1171,7 +1182,6 @@ def process_image(
         print(
             f"Could not approximate to four points for {image_path} after {max_attempts} attempts"
         )
-        return
 
     # Extract the four points
     points = [pt[0] for pt in approx]
@@ -1179,7 +1189,7 @@ def process_image(
     # Order points: top-left, top-right, bottom-left, bottom-right
     points.sort(key=lambda p: p[1])  # Sort by y-coordinate
     top_points = points[:2]
-    bottom_points = points[2:]
+    bottom_points = points[2:4]
     top_points.sort(key=lambda p: p[0])  # Sort top points by x-coordinate
     bottom_points.sort(key=lambda p: p[0])  # Sort bottom points by x-coordinate
     top_left, top_right = top_points
@@ -1246,8 +1256,8 @@ def process_image(
             cv2.line(hough_lines_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
     else:
         print(f"No lines detected in {image_path}")
-        return
 
+    filtered_intersections = []
     if lines is not None:
         verticals, horizontals = filter_and_rectify_hough_lines(
             lines, img.shape, angle_threshold=10, distance_threshold=20
@@ -1272,28 +1282,32 @@ def process_image(
         intersections = compute_intersections(verticals, horizontals)
         for point in intersections:
             cv2.circle(hough_lines_rectified_img, point, 25, (0, 0, 255), -1)
-        
-        x_center, y_center = warped_gray_img.shape[1] // 2, warped_gray_img.shape[0] // 2
 
-        filtered_intersections, square_side = filter_intersections_by_distance(intersections, (x_center, y_center))
-        for point in filtered_intersections:
-            cv2.circle(filtered_intersections_img, point, 25, (0, 255, 0), -1)
+        if intersections != []:
+            x_center, y_center = warped_gray_img.shape[1] // 2, warped_gray_img.shape[0] // 2
+
+            filtered_intersections, square_side = filter_intersections_by_distance(intersections, (x_center, y_center))
+            for point in filtered_intersections:
+                cv2.circle(filtered_intersections_img, point, 25, (0, 255, 0), -1)
 
     else:
         print(f"No lines detected in {image_path}")
 
     filtered_intersections.sort(key=lambda p: (p[1], p[0]))
-    
+
+    found_all_intersections = None
     if len(filtered_intersections) >= 81:
         rows = cols = 8
         step = 9
+        found_all_intersections = True
     else:
         grid_side = int(math.sqrt(len(filtered_intersections))) - 1
         rows = cols = grid_side if grid_side > 0 else 0
         step = grid_side + 1
         print(f"Using a {rows}x{cols} grid with {len(filtered_intersections)} intersections")
+        found_all_intersections = False
 
-    # Avoid direct errors (e.g. did not detect complete board)
+    # Avoid direct exceptions
     board = [[0] * 8 for _ in range(8)]
     # board = [[0] * cols for _ in range(rows)] if rows > 0 and cols > 0 else [[0] * 8]
 
@@ -1302,7 +1316,6 @@ def process_image(
     warped_img_color_blurred = cv2.GaussianBlur(warped_color_img, (5, 5), 0)
     gc_resized_size = (800, 800)
     warped_img_color_blurred_resized = cv2.resize(warped_img_color_blurred, gc_resized_size)
-    # TODO: Check without blurring
 
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
     img_ycrcb = cv2.cvtColor(warped_img_color_blurred_resized, cv2.COLOR_BGR2YCrCb)
@@ -1374,16 +1387,7 @@ def process_image(
                     cv2.polylines(pieces_img_gc, [np.array(square_corners)], True, (0, 255, 0), 10)
                     cv2.polylines(foreground_ratios, [np.array(square_corners)], True, 255, 10)
 
-                    # # Use green from the hint mask: sure foreground
-                    # green_mask = (hint_local_mask[..., 1] == 255) & \
-                    #             (hint_local_mask[..., 0] == 0) & \
-                    #             (hint_local_mask[..., 2] == 0)
-                    # sure_fg[green_mask] = 255
-
-                    # # Piece detected, so square is not sure background
-                    # sure_bg = cv2.subtract(sure_bg, square_mask)
-
-                    sure_fg_helper = local_mask.copy() #cv2.erode(local_mask, None, iterations=2)
+                    sure_fg_helper = local_mask.copy()
                     gc_watershed_sure_fg[sure_fg_helper == 255] = 255
 
                     sure_bg_helper = cv2.bitwise_not(
@@ -1399,15 +1403,40 @@ def process_image(
 
     # Determine unknown region (for watershed, based on GrabCut results)
     gc_watershed_unknown = cv2.subtract(cv2.subtract(gc_watershed_complete_mask, gc_watershed_sure_fg), gc_watershed_sure_bg)
-    num_markers, markers = cv2.connectedComponents(gc_watershed_sure_fg)
-    markers = markers + 1
-    markers[gc_watershed_unknown == 255] = 0
 
+    watershed_sure_fg = gc_watershed_sure_fg
+    watershed_unknown = gc_watershed_unknown
+    watershed_sure_bg = gc_watershed_sure_fg
     img_for_watershed = warped_color_img.copy()
-    markers = cv2.watershed(img_for_watershed, markers)
+
+    watershed_iters = 10
+    kernel = np.ones((5, 5), np.uint8)
+    for iter in range(watershed_iters):
+        num_markers, markers = cv2.connectedComponents(watershed_sure_fg)
+        markers = markers + 1
+        markers[watershed_unknown == 255] = 0
+
+        markers = cv2.watershed(img_for_watershed, markers)
+
+        if iter < watershed_iters - 1:
+            mask = np.uint8(markers > 1) * 255  # 1+ are segmented regions
+
+            # Tried with distanceTransform instead of erode but had slightly worse results
+            sure_fg = cv2.erode(mask, kernel, iterations=5)
+
+            sure_bg_helper = cv2.dilate(mask, kernel, iterations=15)
+            unknown = cv2.subtract(sure_bg_helper, sure_fg)
+
+            watershed_sure_fg = sure_fg
+            watershed_unknown = unknown
+        else:
+            # To visualize the final hint mask given to watershed
+            watershed_sure_bg = np.ones(warped_color_img.shape[:2], dtype=np.uint8) * 255
+            watershed_sure_bg = cv2.subtract(watershed_sure_bg, cv2.bitwise_or(watershed_sure_fg, watershed_unknown))
 
     # Create visualization
     watershed_vis = np.zeros_like(img_for_watershed)
+    watershed_hint_vis = create_watershed_hint_visualization(watershed_sure_fg, watershed_sure_bg, watershed_unknown)
 
     # Assign random colors to each region
     colors = np.random.randint(0, 255, (num_markers + 2, 3))
@@ -1423,7 +1452,6 @@ def process_image(
             watershed_vis[markers == label] = colors[label]
 
     warped_hsv = cv2.cvtColor(warped_img_color_blurred, cv2.COLOR_BGR2HSV)
-    warped_lab = cv2.cvtColor(warped_img_color_blurred, cv2.COLOR_BGR2LAB)
 
     final_white_mask, white_mask, (white_h_mask, white_s_mask, white_v_mask) = (
         get_white_pieces_mask(warped_hsv)
@@ -1463,12 +1491,6 @@ def process_image(
     black_bboxes = get_bboxes(black_contours)
     draw_bboxes(bboxes_img, black_bboxes, (0, 0, 255))
 
-    all_contours = white_contours.copy()
-
-    INCLUDE_BLACK_MASK_CONTOURS = True
-    if INCLUDE_BLACK_MASK_CONTOURS:
-        all_contours.extend(black_contours)
-
     watershed_contours = get_watershed_contours(markers)
     watershed_contours = filter_contours(
         watershed_contours,
@@ -1477,54 +1499,15 @@ def process_image(
         MIN_PIECE_BBOX_WIDTH,
         MIN_PIECE_BBOX_HEIGHT,
     )
-    has_piece_contours = watershed_contours.copy()
 
-    all_bboxes = get_bboxes(all_contours)
-    ##===================================================================================##
-    INCLUDE_ADDITIONAL_CONTOURS = False
-    if INCLUDE_ADDITIONAL_CONTOURS:
-        # Hyperparameters
-        MAX_IOU_TO_INCLUDE = 0.5
-        MAX_INTERSECTION_AREA_RATIO_TO_INCLUDE = 0.1    # much stronger filtering than the IOU
-        TOO_MANY_CONTOURS = 32
-
-        if len(has_piece_contours) > TOO_MANY_CONTOURS:
-            print(f"""Warning: Too many contours ({len(has_piece_contours)}) found using `has_piece` in {image_path}.
-                  Ignored these contours to avoid too many FP""")
-        else:
-            has_piece_bboxes = get_bboxes(has_piece_contours)
-            has_piece_bboxes_dicts = bboxes_to_dicts(has_piece_bboxes)
-            white_bboxes_dicts = bboxes_to_dicts(white_bboxes)
-
-            additional_contours_from_has_pieces = []
-
-            for has_piece_bbox_dict, has_piece_contour in zip(has_piece_bboxes_dicts, has_piece_contours):
-                has_piece_bbox_area = bbox_area(has_piece_bbox_dict)
-                include = True
-                
-                for white_bbox_dict in white_bboxes_dicts:
-                    inter_area = bbox_intersection_area(white_bbox_dict, has_piece_bbox_dict)
-                    white_bbox_area = bbox_area(white_bbox_dict)
-
-                    if (
-                        iou(white_bbox_dict, has_piece_bbox_dict) > MAX_IOU_TO_INCLUDE
-                        or inter_area > MAX_INTERSECTION_AREA_RATIO_TO_INCLUDE * white_bbox_area
-                        or inter_area > MAX_INTERSECTION_AREA_RATIO_TO_INCLUDE * has_piece_bbox_area
-                    ):
-                        include = False
-                        break
-                if include:
-                    additional_contours_from_has_pieces.append(has_piece_contour)
-
-            all_contours.extend(additional_contours_from_has_pieces)
-            additional_bboxes = get_bboxes(additional_contours_from_has_pieces)
-            draw_bboxes(bboxes_img, additional_bboxes, (0, 0, 255))
-
+    if found_all_intersections:
+        all_contours = watershed_contours.copy()
+    else:
+        all_contours = white_contours.copy()
+        all_contours.extend(black_contours)
 
     watershed_piece_contours = warped_color_img.copy()
     cv2.drawContours(watershed_piece_contours, watershed_contours, -1, (255, 0, 0), 10)
-
-    # all_contours = watershed_contours.copy()
 
     original_contours = convert_contours_to_original(warp_matrix, all_contours)
     original_bboxes = get_bboxes(original_contours)
@@ -1571,13 +1554,13 @@ def process_image(
             ('gc_watershed_unknown', lambda: gc_watershed_unknown),
             ('watershed_vis', lambda: watershed_vis),
             ('contours_watershed', lambda: watershed_piece_contours),
-            # ('bgr_clahed', lambda: bgr_clahed),
             ('black_sat_mask', lambda: black_s_mask),
             ('black_hue_mask', lambda: black_h_mask),
             ('black_val_mask', lambda: black_v_mask),
             ('black_pieces_mask_morph', lambda: black_mask_morph),
             ('black_pieces_mask', lambda: black_mask),
             ('watershed_black_mask', lambda: black_pieces_watershed_mask),
+            ('watershed_final_hint_mask', lambda: watershed_hint_vis),
         ]
 
         for output_type, get_image in output_handlers:
@@ -1861,7 +1844,7 @@ def main(process_all: bool = True):
     # --- Configure output options ---
     output_config = {
         'original': False,
-        'corners': False,
+        'corners': True,
         'threshold': False,
         'warped': False,
         'warped_color': False,
@@ -1871,7 +1854,7 @@ def main(process_all: bool = True):
         'dilated': False,
         'hough_lines': False,
         'hough_lines_rectified': False,
-        'filtered_intersections': True,
+        'filtered_intersections': False,
         'pieces_gc': True,
         'grabcut_mask': True,
         'grabcut_fg_ratios': True,
@@ -1897,8 +1880,8 @@ def main(process_all: bool = True):
         'pieces': True,
         'horse': False,
         'rotated': False,
-        'bgr_clahed': True,
         'watershed_black_mask': True,
+        'watershed_final_hint_mask': True,
     }
     for config in output_config:
         for other_config in output_config:
