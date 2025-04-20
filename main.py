@@ -1452,7 +1452,6 @@ def process_image(
             watershed_vis[markers == label] = colors[label]
 
     warped_hsv = cv2.cvtColor(warped_img_color_blurred, cv2.COLOR_BGR2HSV)
-    warped_lab = cv2.cvtColor(warped_img_color_blurred, cv2.COLOR_BGR2LAB)
 
     final_white_mask, white_mask, (white_h_mask, white_s_mask, white_v_mask) = (
         get_white_pieces_mask(warped_hsv)
@@ -1492,12 +1491,6 @@ def process_image(
     black_bboxes = get_bboxes(black_contours)
     draw_bboxes(bboxes_img, black_bboxes, (0, 0, 255))
 
-    all_contours = white_contours.copy()
-
-    INCLUDE_BLACK_MASK_CONTOURS = True
-    if INCLUDE_BLACK_MASK_CONTOURS:
-        all_contours.extend(black_contours)
-
     watershed_contours = get_watershed_contours(markers)
     watershed_contours = filter_contours(
         watershed_contours,
@@ -1506,61 +1499,15 @@ def process_image(
         MIN_PIECE_BBOX_WIDTH,
         MIN_PIECE_BBOX_HEIGHT,
     )
-    has_piece_contours = watershed_contours.copy()
 
-    all_contours = watershed_contours.copy()
     if found_all_intersections:
-        all_contours = watershed_contours
+        all_contours = watershed_contours.copy()
     else:
         all_contours = white_contours.copy()
         all_contours.extend(black_contours)
 
-    all_bboxes = get_bboxes(all_contours)
-    ##===================================================================================##
-    INCLUDE_ADDITIONAL_CONTOURS = False
-    if INCLUDE_ADDITIONAL_CONTOURS:
-        # Hyperparameters
-        MAX_IOU_TO_INCLUDE = 0.5
-        MAX_INTERSECTION_AREA_RATIO_TO_INCLUDE = 0.1    # much stronger filtering than the IOU
-        TOO_MANY_CONTOURS = 32
-
-        if len(has_piece_contours) > TOO_MANY_CONTOURS:
-            print(f"""Warning: Too many contours ({len(has_piece_contours)}) found using `has_piece` in {image_path}.
-                  Ignored these contours to avoid too many FP""")
-        else:
-            has_piece_bboxes = get_bboxes(has_piece_contours)
-            has_piece_bboxes_dicts = bboxes_to_dicts(has_piece_bboxes)
-            white_bboxes_dicts = bboxes_to_dicts(white_bboxes)
-
-            additional_contours_from_has_pieces = []
-
-            for has_piece_bbox_dict, has_piece_contour in zip(has_piece_bboxes_dicts, has_piece_contours):
-                has_piece_bbox_area = bbox_area(has_piece_bbox_dict)
-                include = True
-                
-                for white_bbox_dict in white_bboxes_dicts:
-                    inter_area = bbox_intersection_area(white_bbox_dict, has_piece_bbox_dict)
-                    white_bbox_area = bbox_area(white_bbox_dict)
-
-                    if (
-                        iou(white_bbox_dict, has_piece_bbox_dict) > MAX_IOU_TO_INCLUDE
-                        or inter_area > MAX_INTERSECTION_AREA_RATIO_TO_INCLUDE * white_bbox_area
-                        or inter_area > MAX_INTERSECTION_AREA_RATIO_TO_INCLUDE * has_piece_bbox_area
-                    ):
-                        include = False
-                        break
-                if include:
-                    additional_contours_from_has_pieces.append(has_piece_contour)
-
-            all_contours.extend(additional_contours_from_has_pieces)
-            additional_bboxes = get_bboxes(additional_contours_from_has_pieces)
-            draw_bboxes(bboxes_img, additional_bboxes, (0, 0, 255))
-
-
     watershed_piece_contours = warped_color_img.copy()
     cv2.drawContours(watershed_piece_contours, watershed_contours, -1, (255, 0, 0), 10)
-
-    # all_contours = watershed_contours.copy()
 
     original_contours = convert_contours_to_original(warp_matrix, all_contours)
     original_bboxes = get_bboxes(original_contours)
@@ -1953,9 +1900,9 @@ def main(process_all: bool = True):
             stitch_images(output_dir, image_type=key)
 
 if __name__ == "__main__":
-    process_input(output_dir=None, output_config={}, is_delivery=True, eval_predictions=False)
+    # process_input(output_dir=None, output_config={}, is_delivery=True, eval_predictions=False)
 
-    # main(process_all=True)
+    main(process_all=True)
 
     # Test if labels are being correctly loaded (not used for delivery, just for testing)
     # dataset = get_dataset()
