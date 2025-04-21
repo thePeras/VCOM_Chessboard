@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 from shapely.geometry import Polygon
 import pandas as pd
+import matplotlib.pyplot as plt
 
 import os
 import threading
@@ -276,7 +277,7 @@ def evaluate_board(true_board, pred_board, verbose: bool = False):
         print(f"Recall:    {recall:.2f}")
         print(f"F1 Score:  {f1:.2f}")
         print(f"TP: {tp}, FP: {fp}, FN: {fn}, TN: {tn}")
-    return f1
+    return f1, {"TP": tp, "FP": fp, "FN": fn, "TN": tn}
 
 def evaluate_predictions(
     image_annotations,
@@ -313,7 +314,7 @@ def evaluate_predictions(
 
     if eval_board:
         # Eval the board
-        board_score = evaluate_board(true_board, pred_board)
+        board_score, board_cm = evaluate_board(true_board, pred_board)
         if verbose:
             print(f"Board score: {board_score:.2f}")
 
@@ -328,6 +329,7 @@ def evaluate_predictions(
         "board": board_score,
         "corners": corners_mse,
         "bboxes": bbox_scores,
+        "board_cm": board_cm,
     }
 
 def show_all_annotations(dataset):
@@ -362,6 +364,37 @@ def get_dataset():
     with open("complete_dataset/annotations.json", "r") as f:
         dataset = json.load(f)
     return dataset
+
+
+def create_confusion_matrix(cm_values, output_path):
+    tp = cm_values["TP"]
+    fp = cm_values["FP"]
+    fn = cm_values["FN"]
+    tn = cm_values["TN"]
+    cm = np.array([[tn, fn], [fp, tp]])
+
+    # create a confusion matrix with the values
+    fig, ax = plt.subplots()
+    ax.matshow(cm, cmap=plt.cm.Blues, alpha=0.5)
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            ax.text(
+                j,
+                i,
+                f"{cm[i, j]}",
+                ha="center",
+                va="center",
+                color="black" if cm[i, j] > 0 else "white",
+            )
+    ax.set_xticklabels(["", "0", "1"])
+    ax.set_yticklabels(["", "0", "1"])
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("Real")
+    ax.set_title("Confusion Matrix")
+    plt.tight_layout()
+    cm_path = os.path.join(output_path, "confusion_matrix.png")
+    plt.savefig(cm_path)
+    print(f"Confusion matrix saved to {cm_path}")
 
 ##==================================== Chessboard corner detection Helpers ====================================================##
 
@@ -1665,6 +1698,7 @@ def process_all_images(
     
     output.sort(key=lambda x: x.get("image", ""))
 
+    cm_values = {'TP': 0, 'FP': 0, 'TN': 0, 'FN': 0}
     if eval_predictions:
         # the corners we define are different from the corners in the annotations
         # so there is also a threshold for the error being too small
@@ -1689,12 +1723,21 @@ def process_all_images(
                 cv2.waitKey(0)
                 cv2.destroyAllWindows()
 
+        # Update confusion matrix values
+        for _, row in sorted_evals.iterrows():
+            cm_values['TP'] += row['board_cm']['TP']
+            cm_values['FP'] += row['board_cm']['FP']
+            cm_values['TN'] += row['board_cm']['TN']
+            cm_values['FN'] += row['board_cm']['FN']
+        create_confusion_matrix(cm_values, output_dir)
+
+
         print(sorted_evals)
         bbox_results = sorted_evals["bboxes"]
         board_results = sorted_evals["board"]
         print(f"Mean of the bounding box score results: '{bbox_results.mean():.4f}', median: {bbox_results.median():.4f}")
         print(f"Mean of the board score results: '{board_results.mean():.4f}', median: {board_results.median():.4f}")
-
+        
     json.dump(output, open('output.json', 'w'), indent=4)
 
     print("Output JSON file created.")
@@ -1716,6 +1759,7 @@ def process_input(output_dir, output_config, is_delivery: bool = False, eval_pre
         dataset = get_dataset()
 
     output = []
+    cm_values = {'TP': 0, 'FP': 0, 'TN': 0, 'FN': 0}
     for image in data['image_files']:
         image_path = image  # Json should specify specific path
         try:
@@ -1746,6 +1790,13 @@ def process_input(output_dir, output_config, is_delivery: bool = False, eval_pre
                 verbose=True,
             )
             print(evaluations)
+            cm_values['TP'] += evaluations['board_cm']['TP']
+            cm_values['FP'] += evaluations['board_cm']['FP']
+            cm_values['TN'] += evaluations['board_cm']['TN']
+            cm_values['FN'] += evaluations['board_cm']['FN']
+
+    if eval_predictions:
+        create_confusion_matrix(cm_values, output_dir)
     
     with open('output.json', 'w') as f:
         json.dump(output, f, indent=4)
@@ -1844,7 +1895,7 @@ def main(process_all: bool = True):
     # --- Configure output options ---
     output_config = {
         'original': False,
-        'corners': True,
+        'corners': False,
         'threshold': False,
         'warped': False,
         'warped_color': False,
@@ -1855,33 +1906,33 @@ def main(process_all: bool = True):
         'hough_lines': False,
         'hough_lines_rectified': False,
         'filtered_intersections': False,
-        'pieces_gc': True,
-        'grabcut_mask': True,
-        'grabcut_fg_ratios': True,
-        'grabcut_hint_mask': True,
-        'gc_watershed_sure_fg': True,
-        'gc_watershed_sure_bg': True,
-        'gc_watershed_unknown': True,
-        'watershed_vis': True,
-        'contours_watershed': True,
-        'black_pieces_mask': True,
-        'black_pieces_mask_morph': True,
-        'white_pieces_mask': True,
-        'white_pieces_mask_morph': True,
-        'piece_contours': True,
-        'bboxes': True,
-        "black_hue_mask": True,
-        "black_sat_mask": True,
-        "black_val_mask": True,
-        "white_hue_mask": True,
-        "white_sat_mask": True,
-        "white_val_mask": True,
-        'bboxes_orig': True,
-        'pieces': True,
+        'pieces_gc': False,
+        'grabcut_mask': False,
+        'grabcut_fg_ratios': False,
+        'grabcut_hint_mask': False,
+        'gc_watershed_sure_fg': False,
+        'gc_watershed_sure_bg': False,
+        'gc_watershed_unknown': False,
+        'watershed_vis': False,
+        'contours_watershed': False,
+        'black_pieces_mask': False,
+        'black_pieces_mask_morph': False,
+        'white_pieces_mask': False,
+        'white_pieces_mask_morph': False,
+        'piece_contours': False,
+        'bboxes': False,
+        "black_hue_mask": False,
+        "black_sat_mask": False,
+        "black_val_mask": False,
+        "white_hue_mask": False,
+        "white_sat_mask": False,
+        "white_val_mask": False,
+        'bboxes_orig': False,
+        'pieces': False,
         'horse': False,
         'rotated': False,
-        'watershed_black_mask': True,
-        'watershed_final_hint_mask': True,
+        'watershed_black_mask': False,
+        'watershed_final_hint_mask': False,
     }
     for config in output_config:
         for other_config in output_config:
