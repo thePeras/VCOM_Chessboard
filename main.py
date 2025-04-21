@@ -1377,7 +1377,6 @@ def process_image(
                     square_corners,
                     warped_angle,
                     original_size=img.shape,
-                    resized_size=gc_resized_size,
                 )
 
                 pts = np.array(square_corners, dtype=np.int32)
@@ -1945,9 +1944,9 @@ def main(process_all: bool = True):
             stitch_images(output_dir, image_type=key)
 
 if __name__ == "__main__":
-    # process_input(output_dir=None, output_config={}, is_delivery=True, eval_predictions=False)
+    process_input(output_dir=None, output_config={}, is_delivery=True, eval_predictions=False)
 
-    main(process_all=True)
+    # main(process_all=True)
 
     # Test if labels are being correctly loaded (not used for delivery, just for testing)
     # dataset = get_dataset()
