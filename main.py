@@ -531,8 +531,8 @@ def convex_hull_intersection(poly1, poly2):
 
 ##==================================== Piece detection for each square using GrabCut =========================================##
 
-def has_piece_grabcut(resized_img, original_corners, warp_matrix, original_size, resized_size=(800, 800),
-                      threshold_min=0.15, threshold_max=0.55, iterations=5, nr_pixels_below_piece=10):
+def has_piece_grabcut(resized_img, original_corners, warped_angle, original_size,
+                      threshold_min=0.15, threshold_max=0.55, iterations=5):
     """
     Detects if a piece exists in a square using GrabCut on a resized image.
 
@@ -552,10 +552,6 @@ def has_piece_grabcut(resized_img, original_corners, warp_matrix, original_size,
     resized_h, resized_w = resized_img.shape[:2]
     scale_x = resized_w / orig_w
     scale_y = resized_h / orig_h
-
-    # TODO: This computation outside this function
-    a, b = warp_matrix[0, 0], warp_matrix[0, 1]
-    theta = -np.arctan2(b, a)
 
     # Scale corners to match the resized image
     scaled_corners = [(int(x * scale_x), int(y * scale_y)) for (x, y) in original_corners]
@@ -582,11 +578,11 @@ def has_piece_grabcut(resized_img, original_corners, warp_matrix, original_size,
     y_shifted = rows_idx - cy
 
     # Rotate coordinates
-    x_rot = x_shifted * np.cos(theta) + y_shifted * np.sin(theta)
-    y_rot = -x_shifted * np.sin(theta) + y_shifted * np.cos(theta)
+    x_rot = x_shifted * np.cos(warped_angle) + y_shifted * np.sin(warped_angle)
+    y_rot = -x_shifted * np.sin(warped_angle) + y_shifted * np.cos(warped_angle)
 
-    x_rot_inner = x_shifted * np.cos(-theta) + y_shifted * np.sin(-theta)
-    y_rot_inner = -x_shifted * np.sin(-theta) + y_shifted * np.cos(-theta)
+    x_rot_inner = x_shifted * np.cos(-warped_angle) + y_shifted * np.sin(-warped_angle)
+    y_rot_inner = -x_shifted * np.sin(-warped_angle) + y_shifted * np.cos(-warped_angle)
 
     # Ellipse equations using rotated coordinates
     # Avoid division by 0
@@ -607,10 +603,10 @@ def has_piece_grabcut(resized_img, original_corners, warp_matrix, original_size,
 
     hint_mask = mask.copy()
     
-    # Run GrabCut
     bgModel = np.zeros((1, 65), dtype=np.float64)
     fgModel = np.zeros((1, 65), dtype=np.float64)
 
+    # Run GrabCut
     # Don't call grabCut if the masks were not properly built
     if (
         np.any(mask == cv2.GC_FGD) or np.any(mask == cv2.GC_PR_FGD)
@@ -622,8 +618,6 @@ def has_piece_grabcut(resized_img, original_corners, warp_matrix, original_size,
     result_mask = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 1, 0).astype("uint8")
     foreground_ratio = np.sum(result_mask) / float(w * h)
     has_piece = threshold_min < foreground_ratio and foreground_ratio < threshold_max
-
-    # print(f"Detected piece: {has_piece} (foreground ratio: {foreground_ratio:.2f})")
 
     largest_contour = None
     if has_piece:
@@ -639,8 +633,6 @@ def has_piece_grabcut(resized_img, original_corners, warp_matrix, original_size,
             largest_contour[:, 0, 1] /= scale_y  # y-coordinates
             largest_contour = largest_contour.astype(np.int32)
 
-        # do it again making everything probable background except the piece ???
-
     color_map = {
         cv2.GC_BGD:    (0, 0, 255),   # Definite background: Red.
         cv2.GC_FGD:    (0, 255, 0),   # Definite foreground: Green.
@@ -648,8 +640,7 @@ def has_piece_grabcut(resized_img, original_corners, warp_matrix, original_size,
         cv2.GC_PR_FGD: (0, 255, 255)  # Probable foreground: Yellow.
     }
 
-    # Now, scale the local result_mask back to original coordinates.
-    # Compute ROI location in original image coordinates.
+    # Scale the local result_mask back to original coordinates.
     orig_roi_x = int(x / scale_x)
     orig_roi_y = int(y / scale_y)
     orig_roi_w = int(w / scale_x)
@@ -1355,7 +1346,7 @@ def process_image(
     y, cr, cb = cv2.split(img_ycrcb)
     y_clahe = clahe.apply(y)
     img_clahe = cv2.merge([y_clahe, cr, cb])
-    warped_img_color_blurred_resized = cv2.cvtColor(img_clahe, cv2.COLOR_YCrCb2BGR)
+    warped_img_color_blurred_resized_clahe = cv2.cvtColor(img_clahe, cv2.COLOR_YCrCb2BGR)
 
     final_gc_mask = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
     foreground_ratios = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
@@ -1366,6 +1357,9 @@ def process_image(
     gc_watershed_complete_mask = np.ones(warped_color_img.shape[:2], dtype=np.uint8) * 255
     gc_watershed_sure_bg = np.ones(warped_color_img.shape[:2], dtype=np.uint8) * 255
     gc_watershed_unknown = np.zeros(pieces_img.shape[:2], dtype=np.uint8)
+
+    a, b = warp_matrix[0, 0], warp_matrix[0, 1]
+    warped_angle = -np.arctan2(b, a)
 
     has_piece_contours = []
     for i in range(rows):
@@ -1379,9 +1373,9 @@ def process_image(
                 ]
 
                 grabcut_has_piece, contour, hint_local_mask, local_mask, fg_ratio = has_piece_grabcut(
-                    warped_img_color_blurred_resized,
+                    warped_img_color_blurred_resized_clahe,
                     square_corners,
-                    warp_matrix,
+                    warped_angle,
                     original_size=img.shape,
                     resized_size=gc_resized_size,
                 )
