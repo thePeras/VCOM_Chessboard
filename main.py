@@ -1,5 +1,5 @@
 """
-`pip install opencv-python shapely pandas`
+`pip install opencv-python shapely pandas numpy matplotlib`
 
 Run the file by doing `python3 main.py`.
 This will run the image processing pipeline for the images in the `input.json` file and save the results in the `output.json` file.
