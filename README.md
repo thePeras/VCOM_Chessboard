@@ -29,7 +29,51 @@ https://data.4tu.nl/datasets/99b5c721-280b-450b-b058-b2900b69a90f/2
 - All members of the group are expected to understand the methodology and the submitted code
 
 ## Task 2
-(TBD)
+Count the number of pieces on a chessboard using a CNN-based architecture
+*Extra*: Quantitative comparison (with adequate metrics) different architectures
+
+#### Input:
+- Image containing a game of chess
+
+#### Output:
+- Total number of pieces within he chess board
+
+#### Solutions:
+
+1. Regression-based approach
+2. 
 
 ## Task 3
-(TBD)
+
+### Task 3.1
+Chess Pieces Detection:
+- At least one model, e.g. YOLO, Faster R-CNN
+*Extra*: Quantitative comparison (with adequate metrics) of different architectures
+
+#### Solutions:
+- YOLO, different variants
+- Faster R-CNN
+
+#### Adequate Metrics:
+- mAP (mean Average Precision)
+- different tresholds?
+
+### Task 3.2
+Board "Digital Twin":
+Identify the board status, i.e. where each piece (incl. colour and type) is in the board
+- One model, e.g. detection + traditional methods from task 1
+Qualitative evaluation with some (good and bad) results are enough
+
+Forsyth-Edwards Notation (FEN)
+
+#### Solutions:
+- Use bounding boxes to detect pieces location (using homographies calculated in task1)
+- 13x64 classes, image tagging and classification
+- YOLO inspired 8x8 grid
+
+#### Adequate Metrics:
+- occupancy grid
+- F1 score?
+
+Warning:
+Save all the configuration / information to don't run the model again
