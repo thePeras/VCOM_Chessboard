@@ -1,4 +1,4 @@
-import matplotlib.pyplot as plt, numpy as np, os, torch, random, cv2, json
+import matplotlib.pyplot as plt, numpy as np, os, torch, random, cv2, json, argparse
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 import torch.nn.functional as F
@@ -6,6 +6,7 @@ from torchvision import models
 from torchvision.transforms import v2 as transforms
 from sklearn.metrics import accuracy_score, f1_score
 from torchsummary import summary
+from board_draw import render_board_from_matrix
 
 random.seed(42)
 
@@ -28,8 +29,51 @@ data_in = transforms.Compose([
 
 def chesspos2number(chesspos):
     col = ord(chesspos[0])-ord('a')
-    row = int(chesspos[1])-1
+    row = 8 - int(chesspos[1])  # can be confusing to visualize (since a1 corresponds to row 0, col 0)
     return row, col
+
+def piece_name_to_char(name):
+    piece_names = {
+        "pawn": "p",
+        "rook": "r",
+        "knight": "n",
+        "bishop": "b",
+        "queen": "q",
+        "king": "k",
+    }
+    color_names = {
+        "white": True,
+        "black": False,
+    }
+    piece_char = None
+    for piece_name, letter in piece_names.items():
+        if name.endswith(piece_name):
+            piece_char = letter
+
+    for color_name, upper_case in color_names.items():
+        if name.startswith(color_name):
+            if upper_case and piece_char is not None:
+                piece_char = piece_char.upper()
+            break
+
+    if piece_char is None:
+        return ""
+    return piece_char
+
+def chess_piece_id_to_char(id):
+    # annotations: hardcoded from dataset["categories"]
+    anns = [{'id': 0, 'name': 'white-pawn'}, {'id': 1, 'name': 'white-rook'}, {'id': 2, 'name': 'white-knight'}, {'id': 3, 'name': 'white-bishop'}, {'id': 4, 'name': 'white-queen'}, {'id': 5, 'name': 'white-king'}, {'id': 6, 'name': 'black-pawn'}, {'id': 7, 'name': 'black-rook'}, {'id': 8, 'name': 'black-knight'}, {'id': 9, 'name': 'black-bishop'}, {'id': 10, 'name': 'black-queen'}, {'id': 11, 'name': 'black-king'}, {'id': 12, 'name': 'empty'}]
+    cats = [None] * len(anns)
+    for cat in anns:
+        cats[cat["id"]] = cat["name"]
+    return piece_name_to_char(cats[id])
+
+def board_to_chars(board):
+    board_chars = [[''] * 8 for _ in range(8)]
+    for ri, row in enumerate(board):
+        for ci, id in enumerate(row):
+            board_chars[ri][ci] = chess_piece_id_to_char(id)
+    return board_chars
 
 class ChessDataset(Dataset):
     def __init__(self, root_dir, images_dir, partition, transform=None):
@@ -45,13 +89,13 @@ class ChessDataset(Dataset):
         self.file_names = np.asarray(self.file_names)
         self.ids = np.asarray(self.ids)
         self.occupancy_boards = torch.zeros((len(self.file_names), 8, 8))
-        self.boards = torch.zeros((len(self.file_names), 8, 8))
+        self.boards = torch.full((len(self.file_names), 8, 8), 12, dtype=torch.long)
 
         for piece in self.anns['annotations']['pieces']:
             idx = np.where(self.ids == piece['image_id'])[0][0]
             row, col = chesspos2number(piece['chessboard_position'])
             self.occupancy_boards[idx][row][col] = 1
-            self.boards[idx][row][col] = piece["category_id"] + 1   # 0 means empty, [1,12] means a specific piece
+            self.boards[idx][row][col] = piece["category_id"]   # [0,11] means a specific piece, 12 means empty
 
         if partition == 'train':
             self.split_ids = np.asarray(self.anns['splits']['chessred2k']['train']['image_ids']).astype(int)
@@ -64,6 +108,7 @@ class ChessDataset(Dataset):
         self.split_ids = np.where(intersect)[0]
         self.file_names = self.file_names[self.split_ids]
         self.occupancy_boards = self.occupancy_boards[self.split_ids]
+        self.boards = self.boards[self.split_ids]
         self.num_pieces = torch.sum(self.occupancy_boards.view(len(self.occupancy_boards), 64), axis=-1)
         self.num_pieces = F.one_hot(self.num_pieces.long()-1, 32)
         self.ids = self.ids[self.split_ids]
@@ -83,9 +128,9 @@ class ChessDataset(Dataset):
 
         num_pieces = self.num_pieces[i]
         board = self.boards[i]
-        # occupancy_board = self.occupancy_boards[i]
+        occupancy_board = self.occupancy_boards[i]
 
-        return image, num_pieces.float(), board
+        return image, num_pieces.float(), board, occupancy_board
 
 class ChessboardPredictor(nn.Module):
     def __init__(self, backbone, in_channels):
@@ -138,7 +183,7 @@ def epoch_iter(model, dataloader, optimizer=None, is_training=True, device='cuda
     all_preds = []
     all_targets = []
 
-    for images, _, boards in dataloader:
+    for images, _, boards, __ in dataloader:
         images = images.to(device)               # (B, 3, 224, 224)
         targets = boards.long().to(device)       # (B, 8, 8)
 
@@ -197,34 +242,141 @@ def train_model(model, train_loader, valid_loader, optimizer, scheduler=None, de
 
     return model
 
+def experiment(dataloader):
+    for batch in dataloader:
+        # Get images of the batch and print their dimensions
+        imgs = batch[0]
+        imgs = imgs.permute(0, 2, 3, 1)*torch.tensor([[[0.229, 0.224, 0.225]]]) + torch.tensor([[[0.485, 0.456, 0.406]]])
 
-root_dir = "complete_dataset"
-images_dir = os.path.join(root_dir, "chessred2k")
+        # Get labels of each image in the batch and print them
+        labels = batch[1]
+        print("labels")
+        print(labels[0])
 
-train_dataset = ChessDataset(root_dir, images_dir, 'train', data_aug)
-valid_dataset = ChessDataset(root_dir, images_dir, 'valid', data_in)
-test_dataset = ChessDataset(root_dir, images_dir, 'test', data_in)
+        boards = batch[2]
+        print("boards shape")
+        print(boards.shape)
 
-# get cpu or gpu device for training
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Using {device} device")
+        print(boards[0])
+        chars_board = board_to_chars(boards[0].cpu().long().numpy())
+        print(chars_board)
+        render_board_from_matrix(chars_board)
 
-# now we need to define a Dataloader, which allows us to automatically batch our inputs, do sampling and multiprocess data loading
-batch_size = 16
-num_workers = 2 # how many processes are used to load the data
+        occupancy_boards = batch[3]
+        occ_board = occupancy_boards[0]
+        print(occ_board)
 
-train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, drop_last=True)
-valid_dataloader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
-test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
+        # Show first image of the batch
+        plt.imshow(imgs[0])
+        plt.axis('off')
+        plt.savefig("figure.png")
+        break
 
-model = models.mobilenet_v3_small(weights="DEFAULT")
-net = ChessboardPredictor(model.features, in_channels=576).to(device)
+# def visualize(images, preds):
+def denormalise(img_tensor):
+    """Undo ImageNet normalisation and return uint8 RGB numpy array."""
+    img = img_tensor.cpu().permute(1, 2, 0)
+    img = img * torch.tensor([0.229, 0.224, 0.225]) + torch.tensor([0.485, 0.456, 0.406])
+    img = torch.clamp(img, 0, 1).numpy()
+    return (img * 255).astype(np.uint8)
 
-optimizer = torch.optim.AdamW(net.parameters(), lr=1e-4)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
+def make_board_img(board, label):
+    """Render an 8x8 board (using your helper) and write a small title on top."""
+    board_img = render_board_from_matrix(board_to_chars(board), return_numpy=True)
+    # add a white margin for the text
+    margin = 30
+    board_img = np.vstack([255 * np.ones((margin, board_img.shape[1], 3), np.uint8),
+                           board_img])
+    cv2.putText(board_img, label, (10, 22),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 2, cv2.LINE_AA)
+    return board_img
 
-criterion = nn.CrossEntropyLoss()
+def visualise_sample(img_tensor, pred_board, gt_board, out_file):
+    """Stack: original image (photo), prediction, ground-truth and write to disk."""
+    photo = denormalise(img_tensor)
+    h, w  = photo.shape[:2]
 
-model = train_model(net, train_dataloader, valid_dataloader, optimizer, scheduler, device, epochs=20)
-save_path = "first_model" + ".pth"
-torch.save(model.state_dict(), save_path)
+    pred_img = make_board_img(pred_board, "Prediction")
+    gt_img   = make_board_img(gt_board,   "Ground truth")
+
+    # resize chessboards so they have the same width as the photo
+    pred_img = cv2.resize(pred_img, (w, w), interpolation=cv2.INTER_AREA)
+    gt_img   = cv2.resize(gt_img,   (w, w), interpolation=cv2.INTER_AREA)
+
+    canvas = np.concatenate([photo, pred_img, gt_img], axis=0)
+    cv2.imwrite(out_file, cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR))
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", type=str, choices=["train", "infer"], default="train",
+                        help="Whether to train a new model or run inference")
+    parser.add_argument("--model_path", type=str, default="best_model.pth",
+                        help="Path to saved model weights for inference")
+    args = parser.parse_args()
+
+    root_dir = "complete_dataset"
+    images_dir = os.path.join(root_dir, "chessred2k")
+
+    train_dataset = ChessDataset(root_dir, images_dir, 'train', data_aug)
+    valid_dataset = ChessDataset(root_dir, images_dir, 'valid', data_in)
+    test_dataset = ChessDataset(root_dir, images_dir, 'test', data_in)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using {device} device")
+
+    batch_size = 16
+    num_workers = 2
+
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, drop_last=True)
+    valid_dataloader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
+    
+    # experiment(train_dataloader)
+
+    backbone = models.mobilenet_v3_small(weights="DEFAULT").features
+    model = ChessboardPredictor(backbone, in_channels=576).to(device)
+
+    if args.mode == "train":
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
+
+        model = train_model(model, train_dataloader, valid_dataloader, optimizer, scheduler, device, epochs=20)
+        torch.save(model.state_dict(), args.model_path)
+        print(f"Model saved to {args.model_path}")
+
+    elif args.mode == "infer":
+        print(f"Loading model from {args.model_path}")
+        model.load_state_dict(torch.load(args.model_path, map_location=device))
+        model.eval()
+
+
+        # Inference loop on test data
+        with torch.no_grad():
+            all_preds = []
+            all_labels = []
+
+            os.makedirs("visualisations", exist_ok=True)
+            img_count = 0
+            with torch.no_grad():
+                for images, _, boards, __ in test_dataloader:
+                    images = images.to(device)
+                    outputs = model(images)
+                    preds = torch.argmax(outputs, dim=1).cpu()
+
+                    for i in range(images.size(0)):
+                        visualise_sample(
+                            images[i],                     # tensor
+                            preds[i].numpy(),              # predicted board  (8x8)
+                            boards[i].numpy(),             # ground-truth board
+                            os.path.join("visualisations", f"viz_{img_count:04d}.png")
+                        )
+                        img_count += 1
+                        if img_count >= 50:                # limit number of visualizations
+                            break
+                    if img_count >= 50:
+                        break
+
+        print("Inference complete")
+
+if __name__ == "__main__":
+    main()
