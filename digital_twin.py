@@ -10,14 +10,42 @@ from board_draw import render_board_from_matrix
 
 random.seed(42)
 
-# Normalize images
 data_aug = transforms.Compose([
     transforms.ToImage(),
-    transforms.Resize((256, 256)),
-    transforms.CenterCrop((224, 224)),
+    # full-range rotation (keep entire image, fill border with mean colour)
+    transforms.RandomRotation(
+        degrees=(-180, 180),
+        expand=True,                         # keep corners
+        fill=(123, 117, 104),                # roughly ImageNet mean in 0-255
+        interpolation=transforms.InterpolationMode.BILINEAR
+    ),
+    transforms.RandomPerspective(distortion_scale=0.15, p=0.5),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1, hue=0.04),
+    transforms.RandomApply(
+        [transforms.GaussianBlur(3, sigma=(0.1, 1.5))],
+        p=0.3,
+    ),
+
+    # sizing (keep whole board in view)
+    transforms.Resize(290),
+    transforms.CenterCrop(224),
+
     transforms.ToDtype(torch.float32, scale=True),
-    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    transforms.Normalize([0.485, 0.456, 0.406],
+                         [0.229, 0.224, 0.225]),
+
+    # occlusion (done on the tensor, after normalisation)
+    transforms.RandomErasing(p=0.15, scale=(0.02, 0.08), value='random'),
 ])
+
+# Normalize images
+# data_aug = transforms.Compose([
+#     transforms.ToImage(),
+#     transforms.Resize((256, 256)),
+#     transforms.CenterCrop((224, 224)),
+#     transforms.ToDtype(torch.float32, scale=True),
+#     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+# ])
 
 data_in = transforms.Compose([
     transforms.ToImage(),
@@ -120,7 +148,8 @@ class ChessDataset(Dataset):
         return len(self.file_names)
 
     def __getitem__(self, i):
-        image = cv2.imread(os.path.join(self.images_dir, self.file_names[i]))
+        # about 750x750 (3000 / 4)
+        image = cv2.imread(os.path.join(self.images_dir, self.file_names[i]), cv2.IMREAD_REDUCED_COLOR_4)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
         if self.transform:
@@ -136,47 +165,35 @@ class ChessboardPredictor(nn.Module):
     def __init__(self, backbone, in_channels):
         super().__init__()
         self.backbone = backbone
-        self.head = nn.Sequential(
-            nn.Conv2d(in_channels, 512, 3, padding=1),
-            nn.ReLU(),
-            nn.Upsample(size=(8, 8), mode='bilinear', align_corners=False),
-            nn.Conv2d(512, 13, 1),
+        # self.head = nn.Sequential(
+        #     nn.Conv2d(in_channels, 512, 3, padding=1),
+        #     nn.ReLU(),
+        #     nn.Upsample(size=(8, 8), mode='bilinear', align_corners=False),
+        #     nn.Conv2d(512, 13, 1),
+        # )
+        self.decoder = nn.Sequential(
+            nn.Conv2d(2048, 512, 1, bias=False),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+
+            nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1, bias=False), # 7→14
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+
+            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1, bias=False), # 14→28
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+
+            nn.AdaptiveAvgPool2d((8, 8)),   # robust to any input crop/resize
+            nn.Dropout(0.3),
+            nn.Conv2d(128, 13, 1)            # logits
         )
 
     def forward(self, x):
         x = self.backbone(x)
-        return self.head(x)
+        return self.decoder(x)
 
-# class ChessboardPredictor(nn.Module):
-#     def __init__(self):
-#         super().__init__()
-#         # Load ResNet backbone
-#         backbone = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-
-#         # Use layers up to the last conv block
-#         self.backbone = nn.Sequential(*list(backbone.children())[:-2])  # Output: (B, 2048, 7, 7)
-
-#         # Custom head: Upsample to 8x8 and map to 13 channels
-#         self.head = nn.Sequential(
-#             nn.Conv2d(2048, 512, kernel_size=3, padding=1),  # (B, 512, 7, 7)
-#             nn.BatchNorm2d(512),
-#             nn.ReLU(inplace=True),
-
-#             nn.Upsample(size=(8, 8), mode='bilinear', align_corners=False),  # (B, 512, 8, 8)
-
-#             nn.Conv2d(512, 256, kernel_size=3, padding=1),
-#             nn.BatchNorm2d(256),
-#             nn.ReLU(inplace=True),
-
-#             nn.Conv2d(256, 13, kernel_size=1),  # (B, 13, 8, 8)
-#         )
-
-    # def forward(self, x):
-    #     features = self.backbone(x)   # -> (B, 2048, 7, 7)
-    #     out = self.head(features)     # -> (B, 13, 8, 8)
-    #     return out
-
-def epoch_iter(model, dataloader, optimizer=None, is_training=True, device='cuda'):
+def epoch_iter(model, dataloader, loss_fn, optimizer=None, is_training=True, device='cuda'):
     model.train() if is_training else model.eval()
 
     total_loss = 0
@@ -187,13 +204,11 @@ def epoch_iter(model, dataloader, optimizer=None, is_training=True, device='cuda
         images = images.to(device)               # (B, 3, 224, 224)
         targets = boards.long().to(device)       # (B, 8, 8)
 
+        outputs = model(images)                  # (B, 13, 8, 8)
+        loss = loss_fn(outputs, targets)
+
         if is_training:
             optimizer.zero_grad()
-
-        outputs = model(images)                  # (B, 13, 8, 8)
-        loss = F.cross_entropy(outputs, targets)
-
-        if is_training:
             loss.backward()
             optimizer.step()
 
@@ -214,15 +229,15 @@ def train_model(model, train_loader, valid_loader, optimizer, scheduler=None, de
     best_val_acc = 0.0
     best_model_state = None
     print(">> Training model")
-
+    loss_fn = nn.CrossEntropyLoss()
     for epoch in range(epochs):
         # Train
-        train_loss, train_acc = epoch_iter(model, train_loader, optimizer=optimizer, is_training=True, device=device)
+        train_loss, train_acc = epoch_iter(model, train_loader, loss_fn, optimizer=optimizer, is_training=True, device=device)
 
         # Validate
-        val_loss, val_acc = epoch_iter(model, valid_loader, is_training=False, device=device)
+        val_loss, val_acc = epoch_iter(model, valid_loader, loss_fn, is_training=False, device=device)
 
-        print(f"Epoch {epoch+1}/{epochs} | "
+        print(f"Epoch {epoch+1:02d}/{epochs} | "
               f"Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | "
               f"Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
 
@@ -333,14 +348,15 @@ def main():
     
     # experiment(train_dataloader)
 
-    backbone = models.mobilenet_v3_small(weights="DEFAULT").features
-    model = ChessboardPredictor(backbone, in_channels=576).to(device)
+    backbone = nn.Sequential(*list(
+            models.resnet50(weights=models.ResNet50_Weights.DEFAULT).children())[:-2])  # → (B, 2048, 7, 7)
+    model = ChessboardPredictor(backbone, in_channels=2048).to(device)
 
     if args.mode == "train":
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
 
-        model = train_model(model, train_dataloader, valid_dataloader, optimizer, scheduler, device, epochs=20)
+        model = train_model(model, train_dataloader, valid_dataloader, optimizer, scheduler, device, epochs=1)
         torch.save(model.state_dict(), args.model_path)
         print(f"Model saved to {args.model_path}")
 
@@ -349,13 +365,12 @@ def main():
         model.load_state_dict(torch.load(args.model_path, map_location=device))
         model.eval()
 
-
+        VISUALISATION_DIR = "digital_twin_visualisations"
         # Inference loop on test data
         with torch.no_grad():
             all_preds = []
             all_labels = []
-
-            os.makedirs("visualisations", exist_ok=True)
+            os.makedirs(VISUALISATION_DIR, exist_ok=True)
             img_count = 0
             with torch.no_grad():
                 for images, _, boards, __ in test_dataloader:
@@ -368,7 +383,7 @@ def main():
                             images[i],                     # tensor
                             preds[i].numpy(),              # predicted board  (8x8)
                             boards[i].numpy(),             # ground-truth board
-                            os.path.join("visualisations", f"viz_{img_count:04d}.png")
+                            os.path.join(VISUALISATION_DIR, f"viz_{img_count:04d}.png")
                         )
                         img_count += 1
                         if img_count >= 50:                # limit number of visualizations
@@ -376,7 +391,7 @@ def main():
                     if img_count >= 50:
                         break
 
-        print("Inference complete")
+        print(f"Inference complete, visualisations available at: {VISUALISATION_DIR}")
 
 if __name__ == "__main__":
     main()
