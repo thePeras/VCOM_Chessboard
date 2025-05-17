@@ -104,7 +104,7 @@ def board_to_chars(board):
     return board_chars
 
 class ChessDataset(Dataset):
-    def __init__(self, root_dir, images_dir, partition, transform=None):
+    def __init__(self, root_dir, images_dir, partition, transform=None, use_2k_dataset=False):
         self.anns = json.load(open(os.path.join(root_dir, 'annotations.json')))
         self.categories = [c['name'] for c in self.anns['categories']]
         self.root = root_dir
@@ -125,12 +125,13 @@ class ChessDataset(Dataset):
             self.occupancy_boards[idx][row][col] = 1
             self.boards[idx][row][col] = piece["category_id"]   # [0,11] means a specific piece, 12 means empty
 
+        splits = self.anns["splits"]["chessred2k"] if use_2k_dataset else self.anns["splits"]
         if partition == 'train':
-            self.split_ids = np.asarray(self.anns['splits']['chessred2k']['train']['image_ids']).astype(int)
+            self.split_ids = np.asarray(splits['train']['image_ids']).astype(int)
         elif partition == 'valid':
-            self.split_ids = np.asarray(self.anns['splits']['chessred2k']['val']['image_ids']).astype(int)
+            self.split_ids = np.asarray(splits['val']['image_ids']).astype(int)
         else:
-            self.split_ids = np.asarray(self.anns['splits']['chessred2k']['test']['image_ids']).astype(int)
+            self.split_ids = np.asarray(splits['test']['image_ids']).astype(int)
 
         intersect = np.isin(self.ids, self.split_ids)
         self.split_ids = np.where(intersect)[0]
