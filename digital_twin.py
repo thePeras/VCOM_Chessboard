@@ -331,7 +331,7 @@ def main():
     args = parser.parse_args()
 
     root_dir = "complete_dataset"
-    images_dir = os.path.join(root_dir, "chessred2k")
+    images_dir = os.path.join(root_dir, "chessred")
 
     train_dataset = ChessDataset(root_dir, images_dir, 'train', data_aug)
     valid_dataset = ChessDataset(root_dir, images_dir, 'valid', data_in)
@@ -340,12 +340,12 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using {device} device")
 
-    batch_size = 16
-    num_workers = 2
+    batch_size = 32
+    num_workers = 12
 
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, drop_last=True)
-    valid_dataloader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True)
+    valid_dataloader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False)
     
     # experiment(train_dataloader)
 
@@ -357,7 +357,7 @@ def main():
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
 
-        model = train_model(model, train_dataloader, valid_dataloader, optimizer, scheduler, device, epochs=1)
+        model = train_model(model, train_dataloader, valid_dataloader, optimizer, scheduler, device, epochs=20)
         torch.save(model.state_dict(), args.model_path)
         print(f"Model saved to {args.model_path}")
 
