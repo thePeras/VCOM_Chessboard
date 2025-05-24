@@ -262,7 +262,7 @@ def epoch_iter(model, dataloader, loss_fn, get_targets_fn, calculate_metric_fn, 
     metric = calculate_metric_fn(all_preds, all_targets)
     # accuracy = (all_preds == all_targets).float().mean().item()
 
-    return avg_loss, metric
+    return avg_loss, metric, all_preds, all_targets
 
 def epoch_iter_num_pieces(model, dataloader, loss_fn, optimizer=None, is_training=True, device='cuda'):
     return epoch_iter(
@@ -296,10 +296,10 @@ def train_model_chessboard(model, train_loader, valid_loader, optimizer, schedul
     loss_fn = nn.CrossEntropyLoss()
     for epoch in range(epochs):
         # Train
-        train_loss, train_acc = epoch_iter_chessboard(model, train_loader, loss_fn, optimizer=optimizer, is_training=True, device=device)
+        train_loss, train_acc, _, __ = epoch_iter_chessboard(model, train_loader, loss_fn, optimizer=optimizer, is_training=True, device=device)
 
         # Validate
-        val_loss, val_acc = epoch_iter(model, valid_loader, loss_fn, is_training=False, device=device)
+        val_loss, val_acc, _, __ = epoch_iter(model, valid_loader, loss_fn, is_training=False, device=device)
 
         print(f"Epoch {epoch+1:02d}/{epochs:02d} | "
               f"Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | "
@@ -328,10 +328,10 @@ def train_model_num_pieces(model, train_loader, valid_loader, optimizer, schedul
     loss_fn = nn.MSELoss()
     for epoch in range(epochs):
         # Train
-        train_loss, train_mae = epoch_iter_num_pieces(model, train_loader, loss_fn, optimizer=optimizer, is_training=True, device=device)
+        train_loss, train_mae, _, __ = epoch_iter_num_pieces(model, train_loader, loss_fn, optimizer=optimizer, is_training=True, device=device)
 
         # Validate
-        val_loss, val_mae = epoch_iter_num_pieces(model, valid_loader, loss_fn, is_training=False, device=device)
+        val_loss, val_mae, _, __ = epoch_iter_num_pieces(model, valid_loader, loss_fn, is_training=False, device=device)
 
         print(f"Epoch {epoch+1:02d}/{epochs:02d} | "
               f"Train Loss: {train_loss:.4f}, MAE: {train_mae:.4f} | "
@@ -402,7 +402,7 @@ def make_board_img(board, label):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 2, cv2.LINE_AA)
     return board_img
 
-def visualise_sample(img_tensor, pred_board, gt_board, out_file):
+def visualise_chessboard_sample(img_tensor, pred_board, gt_board, out_file):
     """Stack: original image (photo), prediction, ground-truth and write to disk."""
     photo = denormalise(img_tensor)
     h, w  = photo.shape[:2]
@@ -416,6 +416,52 @@ def visualise_sample(img_tensor, pred_board, gt_board, out_file):
 
     canvas = np.concatenate([photo, pred_img, gt_img], axis=0)
     cv2.imwrite(out_file, cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR))
+
+def visualise_num_pieces_sample(img_tensor, pred_count, gt_count, out_file):
+    """Display original image with predicted and ground-truth piece counts as text."""
+    photo = denormalise(img_tensor)  # (H, W, 3) in RGB, float in [0, 1] or [0, 255]
+    if photo.max() <= 1.0:
+        photo = (photo * 255).astype(np.uint8)
+
+    photo_bgr = cv2.cvtColor(photo, cv2.COLOR_RGB2BGR)
+    text_pred = f"Predicted: {pred_count:.2f}"
+    text_gt   = f"Ground Truth: {gt_count:.0f}"
+
+    # Font settings
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.7
+    thickness = 2
+    color_pred = (0, 255, 0)     # green
+    color_gt   = (0, 0, 255)     # red
+
+    cv2.putText(photo_bgr, text_pred, (10, 30), font, font_scale, color_pred, thickness)
+    cv2.putText(photo_bgr, text_gt,   (10, 60), font, font_scale, color_gt,   thickness)
+    cv2.imwrite(out_file, photo_bgr)
+
+def visualise_preds(model, dataloader, device, viz_sample_fn, viz_dir, get_targets_fn, get_preds_fn, max_viz_cnt=50):
+    os.makedirs(viz_dir, exist_ok=True)
+    img_count = 0
+    with torch.no_grad():
+        for batch in dataloader:    # batch = images, num_pieces, board, occupancy_board
+            images = batch[0].to(device)
+            outputs = model(images)
+            targets = get_targets_fn(batch)
+            preds = (outputs if get_preds_fn is None else get_preds_fn(outputs)).cpu()
+
+            for i in range(images.size(0)):
+                viz_sample_fn(
+                    images[i],
+                    preds[i].numpy(),
+                    targets[i].numpy(),
+                    os.path.join(viz_dir, f"viz_{img_count:04d}.png"),
+                )
+                img_count += 1
+                if img_count >= max_viz_cnt:        # limit number of visualizations
+                    break
+            if img_count >= max_viz_cnt:
+                break
+
+    print(f"Inference complete, visualisations available at {viz_dir}")
 
 def main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, device):
     backbone = nn.Sequential(*list(
@@ -435,50 +481,60 @@ def main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, d
         model.load_state_dict(torch.load(args.model_path, map_location=device))
         model.eval()
 
-        VISUALISATION_DIR = "digital_twin_visualisations"
-        # Inference loop on test data
-        with torch.no_grad():
-            all_preds = []
-            all_labels = []
-            os.makedirs(VISUALISATION_DIR, exist_ok=True)
-            img_count = 0
-            with torch.no_grad():
-                for images, _, boards, __ in test_dataloader:
-                    images = images.to(device)
-                    outputs = model(images)
-                    preds = torch.argmax(outputs, dim=1).cpu()
-
-                    for i in range(images.size(0)):
-                        visualise_sample(
-                            images[i],                     # tensor
-                            preds[i].numpy(),              # predicted board  (8x8)
-                            boards[i].numpy(),             # ground-truth board
-                            os.path.join(VISUALISATION_DIR, f"viz_{img_count:04d}.png")
-                        )
-                        img_count += 1
-                        if img_count >= 50:                # limit number of visualizations
-                            break
-                    if img_count >= 50:
-                        break
-                    all_preds.append(preds)
-                    all_labels.append(boards)
-
-        print(f"Inference complete, visualisations available at: {VISUALISATION_DIR}")
+        loss_fn = nn.CrossEntropyLoss()
+        test_loss, test_acc, all_preds, all_labels = epoch_iter_chessboard(
+            model,
+            test_dataloader,
+            loss_fn=loss_fn,
+            is_training=False,
+            device=device
+        )
+        print(f"Test Loss: {test_loss:.4f}, Acc: {test_acc:.4f}")
+        visualise_preds(
+            model,
+            test_dataloader,
+            device,
+            viz_sample_fn=visualise_chessboard_sample,
+            viz_dir="digital_twin_visualisations",
+            get_targets_fn=get_chessboard_predictor_targets,
+            get_preds_fn=get_preds_chessboard,
+        )
 
 
 def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, device):
-    if args.mode == "train":
-        backbone = nn.Sequential(*list(
-            models.resnet50(weights=models.ResNet50_Weights.DEFAULT).children())[:-1])  # → (B, 2048, 1, 1) (need flatten after)
-        model = NumPiecesPredictor(backbone, out_features=2048).to(device)
+    backbone = nn.Sequential(*list(
+        models.resnet50(weights=models.ResNet50_Weights.DEFAULT).children())[:-1])  # → (B, 2048, 1, 1) (needs flatten after)
+    model = NumPiecesPredictor(backbone, out_features=2048).to(device)
 
+    if args.mode == "train":
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
 
         model = train_model_num_pieces(model, train_dataloader, valid_dataloader, optimizer, scheduler, device, epochs=20)
         print(f"Model saved to {args.model_path}")
     elif args.mode == "infer":
-        pass
+        print(f"Loading model from {args.model_path}")
+        model.load_state_dict(torch.load(args.model_path, map_location=device))
+        model.eval()
+
+        loss_fn = nn.MSELoss()
+        test_loss, test_mae, all_preds, all_labels = epoch_iter_num_pieces(
+            model,
+            test_dataloader,
+            loss_fn=loss_fn,
+            is_training=False,
+            device=device
+        )
+        print(f"Test Loss: {test_loss:.4f}, MAE: {test_mae:.4f}")
+        visualise_preds(
+            model,
+            test_dataloader,
+            device,
+            viz_sample_fn=visualise_num_pieces_sample,
+            viz_dir="num_pieces_visualisations",
+            get_targets_fn=get_num_pieces_predictor_targets,
+            get_preds_fn=None,
+        )
 
 def main():
     parser = argparse.ArgumentParser()
@@ -486,7 +542,7 @@ def main():
                         help="Whether to train a new model or run inference")
     parser.add_argument("--type", type=str, choices=["chessboard", "num-pieces"], default="num-pieces",
                         help="The type of the model to use/train")
-    parser.add_argument("--model_path", type=str, default="best_model.pth",
+    parser.add_argument("--model-path", type=str, default="best_model.pth",
                         help="Path to saved model weights for inference")
     args = parser.parse_args()
 
