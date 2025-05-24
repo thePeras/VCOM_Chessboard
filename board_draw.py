@@ -1,6 +1,10 @@
 import chess
 import chess.svg
 import cairosvg
+import numpy as np
+import io
+from PIL import Image
+
 
 def matrix_to_fen(matrix):
     fen_rows = []
@@ -20,14 +24,6 @@ def matrix_to_fen(matrix):
         fen_rows.append(fen_row)
     fen_position = "/".join(fen_rows)
     return fen_position + " w KQkq - 0 1"
-
-import chess
-import chess.svg
-import cairosvg
-import numpy as np
-import cv2
-import io
-from PIL import Image
 
 def render_board_from_matrix(matrix, return_numpy=False, output_png=None):
     fen = matrix_to_fen(matrix)
