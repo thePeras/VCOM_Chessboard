@@ -1113,7 +1113,7 @@ def process_image(
     output_dir: Optional[str] = None,
     output_config: Optional[dict] = None,
     is_delivery: bool = False,
-    default_show_image: bool = False
+    default_show_image: bool = False,
 ):
     # Hyperparameters
 
@@ -1509,7 +1509,7 @@ def process_image(
         MIN_PIECE_BBOX_WIDTH,
         MIN_PIECE_BBOX_HEIGHT,
     )
-    cv2.drawContours(piece_contours_img, white_contours, -1, (0, 0, 255), 5)
+    cv2.drawContours(piece_contours_img, black_contours, -1, (0, 0, 255), 5)
 
     white_bboxes = get_bboxes(white_contours)
     draw_bboxes(bboxes_img, white_bboxes)
@@ -1587,6 +1587,7 @@ def process_image(
             ('black_pieces_mask', lambda: black_mask),
             ('watershed_black_mask', lambda: black_pieces_watershed_mask),
             ('watershed_final_hint_mask', lambda: watershed_hint_vis),
+            ('post_final_black_mask', lambda: final_black_mask),
         ]
 
         for output_type, get_image in output_handlers:

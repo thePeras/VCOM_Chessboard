@@ -168,33 +168,19 @@ class ChessboardPredictor(nn.Module):
     def __init__(self, backbone, in_channels):
         super().__init__()
         self.backbone = backbone
-        # self.head = nn.Sequential(
-        #     nn.Conv2d(in_channels, 512, 3, padding=1),
-        #     nn.ReLU(),
-        #     nn.Upsample(size=(8, 8), mode='bilinear', align_corners=False),
-        #     nn.Conv2d(512, 13, 1),
-        # )
-        self.decoder = nn.Sequential(
-            nn.Conv2d(2048, 512, 1, bias=False),
-            nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
 
-            nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1, bias=False), # 7→14
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1, bias=False), # 14→28
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-
-            nn.AdaptiveAvgPool2d((8, 8)),   # robust to any input crop/resize
-            nn.Dropout(0.3),
-            nn.Conv2d(128, 13, 1)            # logits
+        self.layers = nn.Sequential(
+            nn.AdaptiveAvgPool2d((1,1)),
+            nn.Flatten(),
+            nn.Linear(in_channels, 8*8*13),
         )
 
     def forward(self, x):
         x = self.backbone(x)
-        return self.decoder(x)
+        flat_x = self.layers(x)
+        batch_size = flat_x.shape[0]
+        x = flat_x.view(batch_size, 13, 8, 8)
+        return x
 
 def get_chessboard_predictor_targets(batch):
     return batch[2].long()
@@ -220,7 +206,7 @@ class NumPiecesPredictor(nn.Module):
 
     def forward(self, x):
         x = self.backbone(x)
-        x = torch.flatten(x, 1)
+        x = torch.flatten(x, start_dim=1)
         x = self.head(x)
         x = torch.sigmoid(x)          # (B, 1) ∈ (0, 1)
         x = x * 30 + 2                # Scale to (2, 32)
@@ -299,7 +285,7 @@ def train_model_chessboard(model, train_loader, valid_loader, optimizer, schedul
         train_loss, train_acc, _, __ = epoch_iter_chessboard(model, train_loader, loss_fn, optimizer=optimizer, is_training=True, device=device)
 
         # Validate
-        val_loss, val_acc, _, __ = epoch_iter(model, valid_loader, loss_fn, is_training=False, device=device)
+        val_loss, val_acc, _, __ = epoch_iter_chessboard(model, valid_loader, loss_fn, is_training=False, device=device)
 
         print(f"Epoch {epoch+1:02d}/{epochs:02d} | "
               f"Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | "
@@ -424,18 +410,28 @@ def visualise_num_pieces_sample(img_tensor, pred_count, gt_count, out_file):
         photo = (photo * 255).astype(np.uint8)
 
     photo_bgr = cv2.cvtColor(photo, cv2.COLOR_RGB2BGR)
+    h, w = photo_bgr.shape[:2]
+
     text_pred = f"Predicted: {pred_count:.2f}"
     text_gt   = f"Ground Truth: {gt_count:.0f}"
 
     # Font settings
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.7
-    thickness = 2
-    color_pred = (0, 255, 0)     # green
-    color_gt   = (0, 0, 255)     # red
+    font_scale = 0.5
+    thickness = 1
+    color_gt   = (0, 255, 0)     # green
+    color_pred = (255, 150, 150) if pred_count.round() == gt_count else (0, 0, 255) # light blue if correct, red otherwise
+    text_gt_pos   = (10, 25)
+    text_pred_pos = (10, 50)
 
-    cv2.putText(photo_bgr, text_pred, (10, 30), font, font_scale, color_pred, thickness)
-    cv2.putText(photo_bgr, text_gt,   (10, 60), font, font_scale, color_gt,   thickness)
+    x1, y1 = 5, 5
+    x2, y2 = min(170, w - 1), min(60, h - 1)
+    sub_img = photo_bgr[y1:y2, x1:x2]       # sub region updated with transparent rectangle for text
+    black_rect = np.zeros(sub_img.shape, dtype=photo_bgr.dtype)
+    cv2.addWeighted(sub_img, 0.4, black_rect, 0.6, 0, dst=sub_img)
+
+    cv2.putText(photo_bgr, text_gt, text_gt_pos, font, font_scale, color_gt, thickness)
+    cv2.putText(photo_bgr, text_pred, text_pred_pos, font, font_scale, color_pred, thickness)
     cv2.imwrite(out_file, photo_bgr)
 
 def visualise_preds(model, dataloader, device, viz_sample_fn, viz_dir, get_targets_fn, get_preds_fn, max_viz_cnt=50):
