@@ -9,6 +9,8 @@ from torchsummary import summary
 from board_draw import render_board_from_matrix
 from sklearn.metrics import r2_score, mean_absolute_error
 
+from typing import Optional
+
 random.seed(42)
 
 data_aug = transforms.Compose([
@@ -275,11 +277,44 @@ def epoch_iter_chessboard(model, dataloader, loss_fn, optimizer=None, is_trainin
         device=device,
     )
 
-def train_model_chessboard(model, train_loader, valid_loader, optimizer, scheduler=None, device='cuda', epochs=10) -> nn.Module:
+def plot_train_history(train_values, val_values, ylabel: str, filename: str, title: Optional[str] = None):
+    """
+    Plots training and validation values (e.g., loss or accuracy) over epochs.
+    """
+    if title is None:
+        title = f"Training & Validation {ylabel}"
+    epochs = range(1, len(train_values) + 1)
+
+    plt.figure()
+    plt.plot(epochs, train_values, 'bo-', label='Training ' + ylabel)
+    plt.plot(epochs, val_values, 'ro-', label='Validation ' + ylabel)
+
+    plt.title(title)
+    plt.xlabel('Epoch')
+    plt.ylabel(ylabel)
+    plt.legend()
+    
+    plt.grid(True)
+    plt.savefig(filename)
+   
+def train_model_chessboard(
+    model,
+    train_loader,
+    valid_loader,
+    optimizer,
+    scheduler=None,
+    device='cuda',
+    epochs=10,
+    figures_save_dir: Optional[str] = None,
+) -> nn.Module:
     best_val_acc = 0.0
     best_model_state = None
-    print(">> Training model")
+
+    train_losses, val_losses = [], []
+    train_scores, val_scores = [], []
+
     loss_fn = nn.CrossEntropyLoss()
+    print(">> Training model")
     for epoch in range(epochs):
         # Train
         train_loss, train_acc, _, __ = epoch_iter_chessboard(model, train_loader, loss_fn, optimizer=optimizer, is_training=True, device=device)
@@ -291,6 +326,11 @@ def train_model_chessboard(model, train_loader, valid_loader, optimizer, schedul
               f"Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | "
               f"Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
 
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+        train_scores.append(train_acc)
+        val_scores.append(val_acc)
+
         # Save best model
         if val_acc > best_val_acc:
             best_val_acc = val_acc
@@ -300,18 +340,36 @@ def train_model_chessboard(model, train_loader, valid_loader, optimizer, schedul
             scheduler.step()
 
     print(f"\nBest Validation Accuracy: {best_val_acc:.4f}")
-    
+
+    if figures_save_dir:
+        plot_train_history(train_losses, val_losses, "Loss", os.path.join(figures_save_dir, "loss.png"))
+        plot_train_history(train_scores, val_scores, "Accuracy", os.path.join(figures_save_dir, "accuracy.png"))
+        print(f"Saved training history plots in {figures_save_dir}")
+
     # Load best model
     if best_model_state:
         model.load_state_dict(best_model_state)
 
     return model
 
-def train_model_num_pieces(model, train_loader, valid_loader, optimizer, scheduler=None, device='cuda', epochs=10) -> nn.Module:
+def train_model_num_pieces(
+    model,
+    train_loader,
+    valid_loader,
+    optimizer,
+    scheduler=None,
+    device='cuda',
+    epochs=10,
+    figures_save_dir: Optional[str] = None,
+) -> nn.Module:
     best_val_mae = float('inf')
     best_model_state = None
-    print(">> Training model")
+
+    train_losses, val_losses = [], []
+    train_scores, val_scores = [], []
+
     loss_fn = nn.MSELoss()
+    print(">> Training model")
     for epoch in range(epochs):
         # Train
         train_loss, train_mae, _, __ = epoch_iter_num_pieces(model, train_loader, loss_fn, optimizer=optimizer, is_training=True, device=device)
@@ -323,6 +381,11 @@ def train_model_num_pieces(model, train_loader, valid_loader, optimizer, schedul
               f"Train Loss: {train_loss:.4f}, MAE: {train_mae:.4f} | "
               f"Val Loss: {val_loss:.4f}, MAE: {val_mae:.4f}")
 
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+        train_scores.append(train_mae)
+        val_scores.append(val_mae)
+
         # Save best model
         if val_mae < best_val_mae:
             best_val_mae = val_mae
@@ -332,7 +395,12 @@ def train_model_num_pieces(model, train_loader, valid_loader, optimizer, schedul
             scheduler.step()
 
     print(f"\nBest Validation MAE: {best_val_mae:.4f}")
-    
+
+    if figures_save_dir:
+        plot_train_history(train_losses, val_losses, "Loss", os.path.join(figures_save_dir, "loss.png"))
+        plot_train_history(train_scores, val_scores, "MAE", os.path.join(figures_save_dir, "mae.png"))
+        print(f"Saved training history plots in {figures_save_dir}")
+
     # Load best model
     if best_model_state:
         model.load_state_dict(best_model_state)
@@ -460,21 +528,34 @@ def visualise_preds(model, dataloader, device, viz_sample_fn, viz_dir, get_targe
     print(f"Inference complete, visualisations available at {viz_dir}")
 
 def main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, device):
+    model_save_path = os.path.join(args.model_path, args.model_path + ".pth")
+
     backbone = nn.Sequential(*list(
             models.resnet50(weights=models.ResNet50_Weights.DEFAULT).children())[:-2])  # → (B, 2048, 7, 7)
     model = ChessboardPredictor(backbone, in_channels=2048).to(device)
 
     if args.mode == "train":
+        os.makedirs(args.model_path, exist_ok=False)
+
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
 
-        model = train_model_chessboard(model, train_dataloader, valid_dataloader, optimizer, scheduler, device, epochs=20)
-        torch.save(model.state_dict(), args.model_path)
-        print(f"Model saved to {args.model_path}")
+        model = train_model_chessboard(
+            model,
+            train_dataloader,
+            valid_dataloader,
+            optimizer,
+            scheduler,
+            device,
+            epochs=20,
+            figures_save_dir=args.model_path,
+        )
+        torch.save(model.state_dict(), model_save_path)
+        print(f"Model saved to {model_save_path}")
 
     elif args.mode == "infer":
-        print(f"Loading model from {args.model_path}")
-        model.load_state_dict(torch.load(args.model_path, map_location=device))
+        print(f"Loading model from {model_save_path}")
+        model.load_state_dict(torch.load(model_save_path, map_location=device))
         model.eval()
 
         loss_fn = nn.CrossEntropyLoss()
@@ -498,19 +579,34 @@ def main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, d
 
 
 def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, device):
+    model_save_path = os.path.join(args.model_path, args.model_path + ".pth")
+
     backbone = nn.Sequential(*list(
         models.resnet50(weights=models.ResNet50_Weights.DEFAULT).children())[:-1])  # → (B, 2048, 1, 1) (needs flatten after)
     model = NumPiecesPredictor(backbone, out_features=2048).to(device)
 
     if args.mode == "train":
+        os.makedirs(args.model_path, exist_ok=False)
+
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
 
-        model = train_model_num_pieces(model, train_dataloader, valid_dataloader, optimizer, scheduler, device, epochs=20)
-        print(f"Model saved to {args.model_path}")
+        model = train_model_num_pieces(
+            model,
+            train_dataloader,
+            valid_dataloader,
+            optimizer,
+            scheduler,
+            device,
+            epochs=20,
+            figures_save_dir=args.model_path,
+        )
+        torch.save(model.state_dict(), model_save_path)
+        print(f"Model saved to {model_save_path}")
+
     elif args.mode == "infer":
-        print(f"Loading model from {args.model_path}")
-        model.load_state_dict(torch.load(args.model_path, map_location=device))
+        print(f"Loading model from {model_save_path}")
+        model.load_state_dict(torch.load(model_save_path, map_location=device))
         model.eval()
 
         loss_fn = nn.MSELoss()
@@ -538,7 +634,7 @@ def main():
                         help="Whether to train a new model or run inference")
     parser.add_argument("--type", type=str, choices=["chessboard", "num-pieces"], default="num-pieces",
                         help="The type of the model to use/train")
-    parser.add_argument("--model-path", type=str, default="best_model.pth",
+    parser.add_argument("--model-path", type=str, default="best_model",
                         help="Path to saved model weights for inference")
     args = parser.parse_args()
 
