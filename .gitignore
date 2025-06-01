@@ -185,3 +185,4 @@ output.json
 debug/
 .vscode
 *visualisations*/
+results*

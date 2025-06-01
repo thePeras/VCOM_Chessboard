@@ -10,6 +10,7 @@ from board_draw import render_board_from_matrix
 from sklearn.metrics import r2_score, mean_absolute_error
 
 from typing import Optional
+import pickle
 
 random.seed(42)
 
@@ -29,7 +30,7 @@ data_aug = transforms.Compose([
         p=0.3,
     ),
 
-    # sizing (keep whole board in view)
+    # sizing (keep whole board in view: larger resize because of rotation)
     transforms.Resize(290),
     transforms.CenterCrop(224),
 
@@ -296,7 +297,7 @@ def plot_train_history(train_values, val_values, ylabel: str, filename: str, tit
     
     plt.grid(True)
     plt.savefig(filename)
-   
+
 def train_model_chessboard(
     model,
     train_loader,
@@ -305,7 +306,7 @@ def train_model_chessboard(
     scheduler=None,
     device='cuda',
     epochs=10,
-    figures_save_dir: Optional[str] = None,
+    save_dir: Optional[str] = None,
 ) -> nn.Module:
     best_val_acc = 0.0
     best_model_state = None
@@ -314,7 +315,7 @@ def train_model_chessboard(
     train_scores, val_scores = [], []
 
     loss_fn = nn.CrossEntropyLoss()
-    print(">> Training model")
+    print(">> Training chessboard (digital twin) model")
     for epoch in range(epochs):
         # Train
         train_loss, train_acc, _, __ = epoch_iter_chessboard(model, train_loader, loss_fn, optimizer=optimizer, is_training=True, device=device)
@@ -341,10 +342,10 @@ def train_model_chessboard(
 
     print(f"\nBest Validation Accuracy: {best_val_acc:.4f}")
 
-    if figures_save_dir:
-        plot_train_history(train_losses, val_losses, "Loss", os.path.join(figures_save_dir, "loss.png"))
-        plot_train_history(train_scores, val_scores, "Accuracy", os.path.join(figures_save_dir, "accuracy.png"))
-        print(f"Saved training history plots in {figures_save_dir}")
+    if save_dir:
+        plot_train_history(train_losses, val_losses, "Loss", os.path.join(save_dir, "loss.png"))
+        plot_train_history(train_scores, val_scores, "Accuracy", os.path.join(save_dir, "accuracy.png"))
+        print(f"Saved training history plots in {save_dir}")
 
     # Load best model
     if best_model_state:
@@ -360,7 +361,7 @@ def train_model_num_pieces(
     scheduler=None,
     device='cuda',
     epochs=10,
-    figures_save_dir: Optional[str] = None,
+    save_dir: Optional[str] = None,
 ) -> nn.Module:
     best_val_mae = float('inf')
     best_model_state = None
@@ -368,14 +369,16 @@ def train_model_num_pieces(
     train_losses, val_losses = [], []
     train_scores, val_scores = [], []
 
+    best_val_preds, val_labels = [], []
+
     loss_fn = nn.MSELoss()
-    print(">> Training model")
+    print(">> Training Number of Pieces model")
     for epoch in range(epochs):
         # Train
         train_loss, train_mae, _, __ = epoch_iter_num_pieces(model, train_loader, loss_fn, optimizer=optimizer, is_training=True, device=device)
 
         # Validate
-        val_loss, val_mae, _, __ = epoch_iter_num_pieces(model, valid_loader, loss_fn, is_training=False, device=device)
+        val_loss, val_mae, val_preds, val_labels = epoch_iter_num_pieces(model, valid_loader, loss_fn, is_training=False, device=device)
 
         print(f"Epoch {epoch+1:02d}/{epochs:02d} | "
               f"Train Loss: {train_loss:.4f}, MAE: {train_mae:.4f} | "
@@ -390,16 +393,21 @@ def train_model_num_pieces(
         if val_mae < best_val_mae:
             best_val_mae = val_mae
             best_model_state = model.state_dict()
+            best_val_preds = val_preds
+            val_labels = val_labels
 
         if scheduler:
             scheduler.step()
 
     print(f"\nBest Validation MAE: {best_val_mae:.4f}")
 
-    if figures_save_dir:
-        plot_train_history(train_losses, val_losses, "Loss", os.path.join(figures_save_dir, "loss.png"))
-        plot_train_history(train_scores, val_scores, "MAE", os.path.join(figures_save_dir, "mae.png"))
-        print(f"Saved training history plots in {figures_save_dir}")
+    if save_dir:
+        save_model_results(filename=os.path.join(save_dir, f"valid"), preds=best_val_preds.numpy(), true=val_labels.numpy())
+        print(f"Saved best validation results in {save_dir}")
+
+        plot_train_history(train_losses, val_losses, "Loss", os.path.join(save_dir, "loss.png"))
+        plot_train_history(train_scores, val_scores, "MAE", os.path.join(save_dir, "mae.png"))
+        print(f"Saved training history plots in {save_dir}")
 
     # Load best model
     if best_model_state:
@@ -416,21 +424,13 @@ def experiment(dataloader):
 
         # Get labels of each image in the batch and print them
         labels = batch[1]
-        print("labels")
-        print(labels[0])
+        boards = get_chessboard_predictor_targets(batch)
 
-        boards = batch[2]
-        print("boards shape")
-        print(boards.shape)
-
-        print(boards[0])
         chars_board = board_to_chars(boards[0].cpu().long().numpy())
-        print(chars_board)
         render_board_from_matrix(chars_board)
 
         occupancy_boards = batch[3]
         occ_board = occupancy_boards[0]
-        print(occ_board)
 
         # Show first image of the batch
         plt.imshow(imgs[0])
@@ -527,15 +527,25 @@ def visualise_preds(model, dataloader, device, viz_sample_fn, viz_dir, get_targe
 
     print(f"Inference complete, visualisations available at {viz_dir}")
 
+def get_model_results_save_dir(base_model_path: str):
+    return f"results-{base_model_path}"
+
+
+def save_model_results(filename: str, preds, true):
+    with open(f"{filename}.pkl", "wb") as f:
+        pickle.dump({"preds": preds, "true": true}, f)
+
+
 def main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, device):
-    model_save_path = os.path.join(args.model_path, args.model_path + ".pth")
+    save_dir = get_model_results_save_dir(args.model_name)
+    model_save_path = os.path.join(save_dir, args.model_name + ".pth")
 
     backbone = nn.Sequential(*list(
             models.resnet50(weights=models.ResNet50_Weights.DEFAULT).children())[:-2])  # → (B, 2048, 7, 7)
     model = ChessboardPredictor(backbone, in_channels=2048).to(device)
 
     if args.mode == "train":
-        os.makedirs(args.model_path, exist_ok=False)
+        os.makedirs(save_dir, exist_ok=False)
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
@@ -548,7 +558,7 @@ def main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, d
             scheduler,
             device,
             epochs=20,
-            figures_save_dir=args.model_path,
+            save_dir=save_dir,
         )
         torch.save(model.state_dict(), model_save_path)
         print(f"Model saved to {model_save_path}")
@@ -579,14 +589,15 @@ def main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, d
 
 
 def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, device):
-    model_save_path = os.path.join(args.model_path, args.model_path + ".pth")
+    save_dir = get_model_results_save_dir(args.model_name)
+    model_save_path = os.path.join(save_dir, args.model_name + ".pth")
 
     backbone = nn.Sequential(*list(
         models.resnet50(weights=models.ResNet50_Weights.DEFAULT).children())[:-1])  # → (B, 2048, 1, 1) (needs flatten after)
     model = NumPiecesPredictor(backbone, out_features=2048).to(device)
 
     if args.mode == "train":
-        os.makedirs(args.model_path, exist_ok=False)
+        os.makedirs(save_dir, exist_ok=False)
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
@@ -599,7 +610,7 @@ def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, d
             scheduler,
             device,
             epochs=20,
-            figures_save_dir=args.model_path,
+            save_dir=save_dir,
         )
         torch.save(model.state_dict(), model_save_path)
         print(f"Model saved to {model_save_path}")
@@ -617,7 +628,9 @@ def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, d
             is_training=False,
             device=device
         )
+        save_model_results(filename=os.path.join(save_dir, f"test"), preds=all_preds.numpy(), true=all_labels.numpy())
         print(f"Test Loss: {test_loss:.4f}, MAE: {test_mae:.4f}")
+
         visualise_preds(
             model,
             test_dataloader,
@@ -634,8 +647,8 @@ def main():
                         help="Whether to train a new model or run inference")
     parser.add_argument("--type", type=str, choices=["chessboard", "num-pieces"], default="num-pieces",
                         help="The type of the model to use/train")
-    parser.add_argument("--model-path", type=str, default="best_model",
-                        help="Path to saved model weights for inference")
+    parser.add_argument("--model-name", type=str, default="best_model",
+                        help="Name of the save model weights for inference (e.g. num_pieces1)")
     args = parser.parse_args()
 
     root_dir = "complete_dataset"
