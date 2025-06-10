@@ -12,6 +12,8 @@ import re
 import json
 import os
 import csv
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 ##==================================== Square and Piece Detection Helpers ====================================================##
 
@@ -735,35 +737,101 @@ def process_single_image(filename):
     return process_fen(board_matrix, filename)
 
 
+def process_single_image_with_model(filename):
+    """Wrapper function that creates its own model instance for thread safety"""
+    # Create a separate model instance for this thread
+    thread_model = YOLO(model_path)
+    
+    image_path = os.path.join(image_directory, filename)
+    print(f"\n--- Processing {filename} ---")
+
+    # 1. Predict pieces
+    print("Predicting pieces...")
+    results = thread_model.predict(image_path, verbose=False)
+    yolo_result = results[0]
+
+    # 2. Detect corners
+    print("Detecting chessboard corners...")
+    corners = get_board_cornes(image_path)
+    if not corners or len(corners) != 4:
+        print("Error: Could not find chessboard corners. Skipping file.")
+        return None
+
+    # 3. Rectify perspective
+    print("Correcting perspective and finding grid...")
+    img_color = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    img_gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+    intersections, all_found, warp_matrix, warped_img = get_board_squares(corners, img_gray, img_color, image_path)
+
+    if not intersections:
+        print("Error: Could not determine the board grid. Skipping file.")
+        return None
+
+    # 4. Map pieces to board
+    print("Mapping pieces to squares...")
+    board_matrix = map_pieces_to_board(yolo_result, intersections, warp_matrix, FEN_MAP)
+
+    # 5. Determine orientation
+    print("Determining board orientation...")
+    rotation, _ = find_orientation(warped_img)
+    if rotation in [cv2.ROTATE_180, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE]:
+        board_matrix = rotate_matrix(rotation, board_matrix)
+
+    # 6. Compute FEN and get edit distance
+    return process_fen(board_matrix, filename)
+
+
 def process_all_images():
     edit_distances = []
     csv_filepath = "mismatches/task3/mismatch_log.csv"
     csv_headers = ['filename', 'predicted_fen', 'true_fen', 'edit_distance']
-
+    
+    # Thread-safe lock for writing to CSV and updating edit_distances
+    csv_lock = threading.Lock()
+    
+    # Get all image files
+    image_files = [filename for filename in os.listdir(image_directory) 
+                   if filename.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    
     with open(csv_filepath, 'w', newline='', encoding='utf-8') as csvfile:
         csv_writer = csv.writer(csvfile)
         csv_writer.writerow(csv_headers)
+        
+        # Use ThreadPoolExecutor for parallel processing
+        with ThreadPoolExecutor(max_workers=4) as executor:  # Adjust max_workers as needed
+            # Submit all tasks using the thread-safe wrapper function
+            future_to_filename = {executor.submit(process_single_image_with_model, filename): filename 
+                                for filename in image_files}
+            
+            # Process completed tasks
+            for future in as_completed(future_to_filename):
+                filename = future_to_filename[future]
+                try:
+                    img_results = future.result()
+                    
+                    # Skip if processing failed
+                    if img_results is None:
+                        continue
+                        
+                    curr_edit_dist = img_results['edit_dist']
+                    
+                    # Thread-safe operations
+                    with csv_lock:
+                        edit_distances.append(curr_edit_dist)
+                        
+                        if curr_edit_dist != 0:
+                            print(f"Prediction error found for {filename}! Edit distance: {curr_edit_dist}. Logging mismatch.")
+                            true_fen = img_results['exp_fen']
+                            predicted_fen = img_results['pred_fen']
+                            row_data = [filename, predicted_fen, true_fen, curr_edit_dist]
+                            csv_writer.writerow(row_data)
+                        else:
+                            print(f"Successfully processed {filename} (edit distance: 0)")
 
-        for filename in os.listdir(image_directory):
-            if not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-                continue
-
-            try:
-                img_results = process_single_image(filename)
-                curr_edit_dist = img_results['edit_dist']
-                edit_distances.append(curr_edit_dist)
-
-                if curr_edit_dist != 0:
-                    print(f"Prediction error found! Edit distance: {curr_edit_dist}. Logging mismatch.")
-                    true_fen = img_results['exp_fen']
-                    predicted_fen = img_results['pred_fen']
-                    row_data = [filename, predicted_fen, true_fen, curr_edit_dist]
-                    csv_writer.writerow(row_data)
-
-            except Exception as e:
-                print(f"An unexpected error occurred while processing {filename}: {e}")
-                csv_writer.writerow([filename, 'ERROR', str(e), -1])
-
+                except Exception as e:
+                    print(f"An unexpected error occurred while processing {filename}: {e}")
+                    with csv_lock:
+                        csv_writer.writerow([filename, 'ERROR', str(e), -1])
 
     if edit_distances:
         mean_dist = np.mean(edit_distances)
@@ -772,7 +840,7 @@ def process_all_images():
         print("\nNo images were processed.")
 
     print(f"Mismatch log saved to: {csv_filepath}")
-    
+
 
 #process_single_image("G083_IMG073.jpg")
 process_all_images()
