@@ -8,13 +8,16 @@ from sklearn.metrics import accuracy_score, f1_score
 from torchsummary import summary
 from board_draw import render_board_from_matrix
 from sklearn.metrics import r2_score, mean_absolute_error
+from matplotlib.widgets import Button
 
 from typing import Optional
 import pickle
+from copy import deepcopy
 
 random.seed(42)
 
-data_aug = transforms.Compose([
+# manual augmentations (not as great performance as RandAugment): not used anymore
+manual_data_aug = transforms.Compose([
     transforms.ToImage(),
     # full-range rotation (keep entire image, fill border with mean colour)
     transforms.RandomRotation(
@@ -30,31 +33,38 @@ data_aug = transforms.Compose([
         p=0.3,
     ),
 
-    # sizing (keep whole board in view: larger resize because of rotation)
-    transforms.Resize(290),
-    transforms.CenterCrop(224),
+    transforms.Resize((384, 384)),  # modify according to the used model (depends on the used pretraining settings)
+    transforms.CenterCrop((384, 384)),
 
     transforms.ToDtype(torch.float32, scale=True),
     transforms.Normalize([0.485, 0.456, 0.406],
                          [0.229, 0.224, 0.225]),
-
-    # occlusion (done on the tensor, after normalisation)
-    transforms.RandomErasing(p=0.15, scale=(0.02, 0.08), value='random'),
 ])
 
-# Normalize images
-# data_aug = transforms.Compose([
-#     transforms.ToImage(),
-#     transforms.Resize((256, 256)),
-#     transforms.CenterCrop((224, 224)),
-#     transforms.ToDtype(torch.float32, scale=True),
-#     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-# ])
+# "automatic" data augmentation
+# replaces the manual jitter/rotate/etc.
+data_aug = transforms.Compose([
+    transforms.ToImage(),
+    transforms.RandomHorizontalFlip(p=0.5),
+    # transforms.AutoAugment(   # can use this instead of RandAugment (leads to worse performance)
+    #     policy=transforms.AutoAugmentPolicy.IMAGENET
+    # ),
+    transforms.RandAugment(     
+        num_ops=2,      # how many transforms to apply per image
+        magnitude=9     # overall strength (0-10)
+    ),
+    transforms.Resize((384, 384)),
+    transforms.CenterCrop((384, 384)),
+
+    transforms.ToDtype(torch.float32, scale=True),
+    transforms.Normalize([0.485, 0.456, 0.406],
+                         [0.229, 0.224, 0.225])
+])
 
 data_in = transforms.Compose([
     transforms.ToImage(),
-    transforms.Resize((256, 256)),
-    transforms.CenterCrop((224, 224)),
+    transforms.Resize((384, 384)),      # modify according to model used
+    transforms.CenterCrop((384, 384)),
     transforms.ToDtype(torch.float32, scale=True),
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 ])
@@ -143,8 +153,6 @@ class ChessDataset(Dataset):
         self.occupancy_boards = self.occupancy_boards[self.split_ids]
         self.boards = self.boards[self.split_ids]
         self.num_pieces = torch.sum(self.occupancy_boards.view(len(self.occupancy_boards), 64), axis=-1)
-
-        # self.num_pieces = F.one_hot(self.num_pieces.long()-1, 32) # for classification
         self.ids = self.ids[self.split_ids]
 
         self.transform = transform
@@ -202,18 +210,32 @@ def get_preds_chessboard(outputs):
     return preds
 
 class NumPiecesPredictor(nn.Module):
-    def __init__(self, backbone, out_features):
+    def __init__(self, model):
         super().__init__()
-        self.backbone = backbone
-        self.head = nn.Linear(out_features, 1)
+        self.model = model
+        self.activation = nn.ReLU()
+        self.scale = nn.Parameter(torch.tensor(1.0))
+        self.bias = nn.Parameter(torch.tensor(2.0))
 
-    def forward(self, x):
-        x = self.backbone(x)
-        x = torch.flatten(x, start_dim=1)
-        x = self.head(x)
-        x = torch.sigmoid(x)          # (B, 1) ∈ (0, 1)
+    def _forward_sigmoid(self, x):  # initial sigmoid setup
+        x = self.model(x)
+        x = torch.sigmoid(x)          # (B, 1): [0, 1]
         x = x * 30 + 2                # Scale to (2, 32)
         return x.squeeze(1)           # Final shape: (B,)
+
+    def _forward_relu(self, x): # basic ReLU setup
+        x = self.model(x)
+        x = self.activation(x)
+        return x.squeeze(1)
+
+    def _forward_relu2(self, x):    # The most promising results
+        x = self.model(x)
+        x = self.activation(x)
+        x = x * self.scale + self.bias  # scale it given learnable parameters
+        return x.squeeze(1)
+
+    def forward(self, x):
+        return self._forward_relu2(x)
 
 def epoch_iter(model, dataloader, loss_fn, get_targets_fn, calculate_metric_fn, get_preds_fn=None, optimizer=None, is_training=True, device='cuda'):
     model.train() if is_training else model.eval()
@@ -224,11 +246,10 @@ def epoch_iter(model, dataloader, loss_fn, get_targets_fn, calculate_metric_fn, 
 
     with context:
         for batch in dataloader:
-            images = batch[0].to(device)               # (B, 3, 224, 224)
+            images = batch[0].to(device)
             targets = get_targets_fn(batch).to(device)
-            # targets = boards.long().to(device)       # (B, 8, 8)
 
-            outputs = model(images)                  # (B, 13, 8, 8)
+            outputs = model(images)
             loss = loss_fn(outputs, targets)
 
             if is_training:
@@ -238,7 +259,6 @@ def epoch_iter(model, dataloader, loss_fn, get_targets_fn, calculate_metric_fn, 
 
             total_loss += loss.item()
 
-            # preds = outputs.argmax(dim=1)            # (B, 8, 8)
             preds = outputs.detach() if get_preds_fn is None else get_preds_fn(outputs.detach())
 
             all_preds.append(preds.cpu())
@@ -249,7 +269,6 @@ def epoch_iter(model, dataloader, loss_fn, get_targets_fn, calculate_metric_fn, 
     all_targets = torch.cat(all_targets)
 
     metric = calculate_metric_fn(all_preds, all_targets)
-    # accuracy = (all_preds == all_targets).float().mean().item()
 
     return avg_loss, metric, all_preds, all_targets
 
@@ -335,7 +354,7 @@ def train_model_chessboard(
         # Save best model
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            best_model_state = model.state_dict()
+            best_model_state = deepcopy(model.state_dict())
 
         if scheduler:
             scheduler.step()
@@ -358,6 +377,7 @@ def train_model_num_pieces(
     train_loader,
     valid_loader,
     optimizer,
+    loss_fn,
     scheduler=None,
     device='cuda',
     epochs=10,
@@ -371,7 +391,6 @@ def train_model_num_pieces(
 
     best_val_preds, val_labels = [], []
 
-    loss_fn = nn.MSELoss()
     print(">> Training Number of Pieces model")
     for epoch in range(epochs):
         # Train
@@ -392,7 +411,7 @@ def train_model_num_pieces(
         # Save best model
         if val_mae < best_val_mae:
             best_val_mae = val_mae
-            best_model_state = model.state_dict()
+            best_model_state = deepcopy(model.state_dict())
             best_val_preds = val_preds
             val_labels = val_labels
 
@@ -415,27 +434,52 @@ def train_model_num_pieces(
 
     return model
 
-
 def experiment(dataloader):
+    """
+    Function to experiment and see the image results of a specific dataloader.
+    Mostly useful to check how the images are "coming out" of our data augmentations
+    """
     for batch in dataloader:
-        # Get images of the batch and print their dimensions
         imgs = batch[0]
-        imgs = imgs.permute(0, 2, 3, 1)*torch.tensor([[[0.229, 0.224, 0.225]]]) + torch.tensor([[[0.485, 0.456, 0.406]]])
-
-        # Get labels of each image in the batch and print them
         labels = batch[1]
         boards = get_chessboard_predictor_targets(batch)
-
-        chars_board = board_to_chars(boards[0].cpu().long().numpy())
-        render_board_from_matrix(chars_board)
-
         occupancy_boards = batch[3]
-        occ_board = occupancy_boards[0]
 
-        # Show first image of the batch
-        plt.imshow(imgs[0])
-        plt.axis('off')
-        plt.savefig("figure.png")
+        # Undo normalization
+        imgs = imgs.permute(0, 2, 3, 1)
+        imgs = imgs * torch.tensor([0.229, 0.224, 0.225]) + torch.tensor([0.485, 0.456, 0.406])
+        imgs = torch.clamp(imgs, 0, 1)  # Ensure values are in [0,1] for display
+
+        num_images = imgs.shape[0]
+        current_idx = [0]  # Use list for mutability in inner scope
+
+        fig, ax = plt.subplots()
+        plt.subplots_adjust(bottom=0.2)
+        img_display = ax.imshow(imgs[current_idx[0]].numpy())
+        ax.axis('off')
+
+        def update_image():
+            ax.clear()
+            ax.imshow(imgs[current_idx[0]].numpy())
+            ax.axis('off')
+            fig.canvas.draw_idle()
+
+        def next_image(event):
+            current_idx[0] = (current_idx[0] + 1) % num_images
+            update_image()
+
+        def quit_viewer(event):
+            plt.close(fig)
+
+        ax_next = plt.axes([0.7, 0.05, 0.1, 0.075])
+        btn_next = Button(ax_next, 'Next')
+        btn_next.on_clicked(next_image)
+
+        ax_quit = plt.axes([0.81, 0.05, 0.1, 0.075])
+        btn_quit = Button(ax_quit, 'Quit')
+        btn_quit.on_clicked(quit_viewer)
+
+        plt.show()
         break
 
 def denormalise(img_tensor):
@@ -547,7 +591,7 @@ def main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, d
     if args.mode == "train":
         os.makedirs(save_dir, exist_ok=False)
 
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
 
         model = train_model_chessboard(
@@ -563,7 +607,7 @@ def main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, d
         torch.save(model.state_dict(), model_save_path)
         print(f"Model saved to {model_save_path}")
 
-    elif args.mode == "infer":
+    elif args.mode == "infer-test":
         print(f"Loading model from {model_save_path}")
         model.load_state_dict(torch.load(model_save_path, map_location=device))
         model.eval()
@@ -592,10 +636,25 @@ def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, d
     save_dir = get_model_results_save_dir(args.model_name)
     model_save_path = os.path.join(save_dir, args.model_name + ".pth")
 
-    backbone = nn.Sequential(*list(
-        models.resnet50(weights=models.ResNet50_Weights.DEFAULT).children())[:-1])  # → (B, 2048, 1, 1) (needs flatten after)
-    model = NumPiecesPredictor(backbone, out_features=2048).to(device)
+    # Different models to manually setup
+    # conv_model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+    # conv_model.fc = nn.Linear(in_features=conv_model.fc.in_features, out_features=1)
+    # conv_model = models.resnext101_64x4d(weights=models.ResNeXt101_64X4D_Weights.DEFAULT)
+    # conv_model.fc = nn.Linear(conv_model.fc.in_features, out_features=1)
+    conv_model = models.efficientnet_v2_s(weights=models.EfficientNet_V2_S_Weights.DEFAULT) # requires different crop size
+    conv_model.classifier[1] = nn.Linear(conv_model.classifier[1].in_features, out_features=1)
+    # conv_model = models.swin_v2_s(weights=models.Swin_V2_S_Weights.DEFAULT)
+    # conv_model.head = nn.Linear(in_features=conv_model.head.in_features, out_features=1)    
+    model = NumPiecesPredictor(conv_model).to(device)
 
+    # try
+    # learning rates
+    # weight decays
+    # CosineAnnealingWarmRestarts(opt, T_0=10, T_mult=2), OneCycleLR(opt, max_lr=lr, epochs=30, steps_per_epoch=len(train_loader)
+
+    # loss_fn = nn.MSELoss()
+    # loss_fn = nn.SmoothL1Loss()
+    loss_fn = nn.L1Loss()
     if args.mode == "train":
         os.makedirs(save_dir, exist_ok=False)
 
@@ -607,33 +666,42 @@ def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, d
             train_dataloader,
             valid_dataloader,
             optimizer,
+            loss_fn,
             scheduler,
             device,
-            epochs=20,
+            epochs=30,
             save_dir=save_dir,
         )
         torch.save(model.state_dict(), model_save_path)
         print(f"Model saved to {model_save_path}")
 
-    elif args.mode == "infer":
+    elif args.mode.startswith("infer"):
+        if args.mode == "infer-test":
+            filename = "test"
+            dataloader = test_dataloader
+        elif args.mode == "infer-valid":
+            filename = "valid"
+            dataloader = valid_dataloader
+        else:
+            raise ValueError("Invalid args mode found in main_num_pieces")
+
         print(f"Loading model from {model_save_path}")
         model.load_state_dict(torch.load(model_save_path, map_location=device))
         model.eval()
 
-        loss_fn = nn.MSELoss()
         test_loss, test_mae, all_preds, all_labels = epoch_iter_num_pieces(
             model,
-            test_dataloader,
+            dataloader,
             loss_fn=loss_fn,
             is_training=False,
             device=device
         )
-        save_model_results(filename=os.path.join(save_dir, f"test"), preds=all_preds.numpy(), true=all_labels.numpy())
+        save_model_results(filename=os.path.join(save_dir, filename), preds=all_preds.numpy(), true=all_labels.numpy())
         print(f"Test Loss: {test_loss:.4f}, MAE: {test_mae:.4f}")
 
         visualise_preds(
             model,
-            test_dataloader,
+            dataloader,
             device,
             viz_sample_fn=visualise_num_pieces_sample,
             viz_dir="num_pieces_visualisations",
@@ -643,7 +711,8 @@ def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, d
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", type=str, choices=["train", "infer"], default="infer",
+    # TODO: add something like is-delivery (e.g. mode "delivery") to read from input.json()
+    parser.add_argument("--mode", type=str, choices=["train", "infer-valid", "infer-test"], default="infer-test",
                         help="Whether to train a new model or run inference")
     parser.add_argument("--type", type=str, choices=["chessboard", "num-pieces"], default="num-pieces",
                         help="The type of the model to use/train")
@@ -662,14 +731,15 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using {device} device")
 
-    batch_size = 32
+    batch_size = 16     # as large as possible (depends on image resizes used)
     num_workers = 12
 
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True)
     valid_dataloader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False)
     test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False)
 
-    # experiment(train_dataloader)
+    # experiment(train_dataloader)  # uncomment to visualise train dataloader (mostly for augmentations)
+    # exit(0)
 
     if args.type == "chessboard":
         main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, device)
