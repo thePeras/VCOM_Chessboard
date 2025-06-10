@@ -2,6 +2,7 @@ import math
 import cv2
 import numpy as np
 from shapely.geometry import Polygon
+from ultralytics import YOLO
 
 ##==================================== Square and Piece Detection Helpers ====================================================##
 
