@@ -185,3 +185,5 @@ output.json
 debug/
 .vscode
 *visualisations*/
+
+mismatches/
