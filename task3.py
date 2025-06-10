@@ -5,9 +5,12 @@ from shapely.geometry import Polygon
 from ultralytics import YOLO
 import chess
 import chess.svg
-import cairosvg
 import io
 from PIL import Image
+from editdistance import eval as edit_distance
+import re
+import json
+import os
 
 ##==================================== Square and Piece Detection Helpers ====================================================##
 
@@ -555,7 +558,7 @@ FEN_MAP = {
 
 
 def map_pieces_to_board(yolo_result, intersections, warp_matrix, fen_map):
-    board_matrix = [["" for _ in range(8)] for _ in range(8)]
+    board_matrix = [["*" for _ in range(8)] for _ in range(8)]
     if not intersections:
         print("No intersections provided, cannot map pieces.")
         return board_matrix
@@ -608,7 +611,7 @@ def matrix_to_fen(board_matrix):
         empty_count = 0
         fen_row = ""
         for cell in row:
-            if cell == "":
+            if cell == "*":
                 empty_count += 1
             else:
                 if empty_count > 0:
@@ -620,58 +623,100 @@ def matrix_to_fen(board_matrix):
         fen_rows.append(fen_row)
     return "/".join(fen_rows)
 
+
+def get_ground_truth_fen(image_path):
+    img_id = int(re.search(r'IMG(\d+)', image_path).group(1))
+    with open('annotations_fen.json', 'r') as f:
+        data = json.load(f)
+    fen_str = data[str(img_id)]
+    return fen_str
+
+
+def process_fen(board_matrix, image_path):
+    def fen_to_full_str(fen_str):
+        result = ""
+        for char in fen_str:
+            if char.isdigit():
+                result += "*" * int(char)
+            else:
+                result += char
+        return result
+
+    pred_fen = matrix_to_fen(board_matrix)
+    exp_fen = get_ground_truth_fen(image_path)
+
+    pred_string = "/".join("".join(row) for row in board_matrix)
+    exp_string = fen_to_full_str(exp_fen)
+    
+    edit_dist = edit_distance(pred_string, exp_string)
+    
+    return {"pred_fen":pred_fen, "edit_dist":edit_dist}
+
 # ==================================== Main Execution ====================================================
 
-model_path = "/home/adriano/Desktop/Projetos/chessboard-computer-vision/models/myYolov8n/weights/best.pt"
-image_path = "/home/adriano/Desktop/Projetos/chessboard-computer-vision/data/images/G000_IMG062.jpg"
-
-print("Loading YOLO model and predicting pieces...")
+model_path = "models/myYolov8n/weights/best.pt"
+image_directory = "data/images/"
 model = YOLO(model_path)
-results = model.predict(image_path, verbose=False)
-yolo_result = results[0]
 
-print("Detecting chessboard corners...")
-corners = get_board_cornes(image_path)
-if not corners or len(corners) != 4:
-    print("Error: Could not find chessboard corners. Exiting.")
-else:
-    # 3. Get the board grid, warp matrix, and rectified image
-    print("Correcting perspective and finding grid...")
-    img_color = cv2.imread(image_path, cv2.IMREAD_COLOR)
-    img_gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
-    
-    intersections, all_found, warp_matrix, warped_img = get_board_squares(corners, img_gray, img_color, image_path)
+edit_distances = []
 
-    if not all_found:
-        print(f"Warning: Only found {len(intersections)}/81 intersections. FEN may be inaccurate.")
+# iterate on "data/images/"
+for filename in os.listdir(image_directory):
+    if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+        image_path = os.path.join(image_directory, filename)
+        print(f"\n--- Processing {filename} ---")
 
-    if intersections:
+        print("Loading YOLO model and predicting pieces...")
+        results = model.predict(image_path, verbose=False)
+        yolo_result = results[0]
+
+        print("Detecting chessboard corners...")
+        corners = get_board_cornes(image_path)
+        if not corners or len(corners) != 4:
+            print("Error: Could not find chessboard corners. Skipping file.")
+            continue # Skip to the next image
+
+        # 3. Get the board grid, warp matrix, and rectified image
+        print("Correcting perspective and finding grid...")
+        img_color = cv2.imread(image_path, cv2.IMREAD_COLOR)
+        img_gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+
+        intersections, all_found, warp_matrix, warped_img = get_board_squares(corners, img_gray, img_color, image_path)
+
+        if not all_found:
+            print(f"Warning: Only found {len(intersections)}/81 intersections. FEN may be inaccurate.")
+            if not intersections:
+                print("Error: Could not determine the board grid. Skipping file.")
+                continue # Skip to the next image
+
         # 4. Map the detected pieces to the board matrix
         print("Mapping pieces to squares...")
         board_matrix = map_pieces_to_board(yolo_result, intersections, warp_matrix, FEN_MAP)
-        
+
         # 5. Determine board orientation and rotate matrix if necessary
         print("Determining board orientation...")
         rotation, _ = find_orientation(warped_img) # Use the warped image for reliability
-        
-        # If the horse is found in the top_right or top_left, the board is effectively
-        # upside down from white's perspective.
+
+        # If the board is detected as being from Black's perspective, rotate it
         if rotation in [cv2.ROTATE_180, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE]:
             print("Board appears to be from Black's perspective. Rotating matrix 180 degrees.")
-            # Rotate matrix 180 degrees
             board_matrix = [row[::-1] for row in board_matrix[::-1]]
 
         # 6. Compute and print the final FEN string
-        fen_string = matrix_to_fen(board_matrix)
-        
-        print("\nDetected Board State:")
-        for row in board_matrix:
-            print(" | ".join(f"{c or '.':>1}" for c in row))
+        result = process_fen(board_matrix, image_path)
+        edit_distances.append(result['edit_dist'])
 
-        board = chess.Board(fen_string)
-        fen_svg = chess.svg.board(board=board)
-        output_filename = "chessboard_render.png"
-        cairosvg.svg2png(bytestring=fen_svg.encode('utf-8'), write_to=output_filename)
-        print(f"Chessboard image saved to {output_filename}")
-    else:
-        print("Error: Could not determine the board grid. Cannot generate FEN.")
+if edit_distances:
+    mean_dist = np.mean(edit_distances)
+    print(f'\nMean edit distance across {len(edit_distances)} images: {mean_dist:.4f}')
+else:
+    print("No images were processed or no edit distances were calculated.")
+
+
+"""
+board = chess.Board(fen_string)
+fen_svg = chess.svg.board(board=board)
+output_filename = "chessboard_render.png"
+cairosvg.svg2png(bytestring=fen_svg.encode('utf-8'), write_to=output_filename)
+print(f"Chessboard image saved to {output_filename}")
+"""
