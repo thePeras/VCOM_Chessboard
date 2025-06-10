@@ -627,10 +627,10 @@ def matrix_to_fen(board_matrix):
     return "/".join(fen_rows)
 
 
-def get_ground_truth_fen(filename):
+def get_ground_truth_fen(filepath):
     with open('annotations_fen.json', 'r') as f:
         data = json.load(f)
-    fen_str = data[str(filename)]
+    fen_str = data[str(filepath.split("/")[-1])]
     return fen_str
 
 
@@ -694,7 +694,7 @@ def rotate_matrix(rotation, board_matrix):
 
 #model_path = "models/myYolov8n/weights/best.pt"
 model_path = "models/myYolo11s/weights/best.pt"
-image_directory = "data/images/"
+image_directory = "complete_dataset/images/"
 model = YOLO(model_path)
 
 
@@ -742,7 +742,7 @@ def process_single_image_with_model(filename):
     # Create a separate model instance for this thread
     thread_model = YOLO(model_path)
     
-    image_path = os.path.join(image_directory, filename)
+    image_path = filename
     print(f"\n--- Processing {filename} ---")
 
     # 1. Predict pieces
@@ -789,9 +789,18 @@ def process_all_images():
     # Thread-safe lock for writing to CSV and updating edit_distances
     csv_lock = threading.Lock()
     
+    all_folders = os.listdir(image_directory)
+    image_files = []
+    for folder in all_folders:
+        folder_path = os.path.join(image_directory, folder)
+        if os.path.isdir(folder_path):
+            for filename in os.listdir(folder_path):
+                if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    image_files.append(os.path.join(folder_path, filename))
+
     # Get all image files
-    image_files = [filename for filename in os.listdir(image_directory) 
-                   if filename.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    #image_files = [filename for filename in os.listdir(image_directory) 
+    #               if filename.lower().endswith(('.png', '.jpg', '.jpeg'))]
     
     with open(csv_filepath, 'w', newline='', encoding='utf-8') as csvfile:
         csv_writer = csv.writer(csvfile)
