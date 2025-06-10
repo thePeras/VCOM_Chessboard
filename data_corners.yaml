@@ -1,0 +1,11 @@
+path: /kaggle/input/chessboard-cv
+
+train: dataset_plus/splits/train.txt
+val: dataset_plus/splits/val.txt
+test: dataset_plus/splits/test.txt
+
+nc: 4
+names:
+  [
+    "top_left", "top_right", "bottom_right", "bottom_left"
+  ]
