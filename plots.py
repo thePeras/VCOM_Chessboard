@@ -16,7 +16,8 @@ def process_results(
     results_type: str,
     *,
     labels: Optional[str] = None,
-    skip_single_plot_shows: bool = True,
+    legend_label: Optional[str] = None,
+    show_single_plots: bool = False,
     set_title: bool = True,
 ):
     """
@@ -40,7 +41,7 @@ def process_results(
             round(p.item()) if isinstance(p, torch.Tensor) else round(p)
             for p in pred
         ]
-        if not skip_single_plot_shows:
+        if show_single_plots:
             cm = confusion_matrix(true, rounded_pred, labels=range(2, 33))  # 2 to 32
             disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=range(2, 33))
             disp.plot(xticks_rotation=90, cmap='Blues')
@@ -49,7 +50,7 @@ def process_results(
             plt.show()
 
         errors = np.array(pred) - np.array(true)
-        if not skip_single_plot_shows:
+        if show_single_plots:
             plt.hist(errors, bins=20, edgecolor='black')
             plt.xlabel('Prediction Error (Pred - True)')
             plt.ylabel('Frequency')
@@ -58,7 +59,7 @@ def process_results(
             plt.grid(True)
             plt.show()
 
-        if not skip_single_plot_shows:
+        if show_single_plots:
             plt.scatter(true, pred, alpha=0.6)
             plt.plot([2, 32], [2, 32], 'r--')  # y=x line for perfect predictions
             plt.xlabel('True Number of Pieces')
@@ -87,10 +88,7 @@ def process_results(
             "Rounded Acc ($\\uparrow$)": acc_with_rounded
         })
 
-    # Maybe compare results?
-    # E.g., make a bars plot with different models/parameters
-
-    # Bar plot to compare models
+    # Bar plot to compare models/parameters
     if len(all_metrics) > 1:
         metric_names = ["MAE ($\\downarrow$)", "RMSE ($\\downarrow$)", "Acc $\\pm$ 1 ($\\uparrow$)", "Rounded Acc ($\\uparrow$)"]
         num_metrics = len(metric_names)
@@ -121,7 +119,8 @@ def process_results(
             ax.set_title('Model Comparison by Metrics')
         ax.set_xticks(x + (num_models - 1) * width / 2)
         ax.set_xticklabels(metric_names)
-        ax.legend(title="Models")
+        if legend_label is not None:
+            ax.legend(title=legend_label)
         ax.grid(True, axis='y')
         plt.tight_layout()
         plt.show()
@@ -145,7 +144,8 @@ if __name__ == "__main__":
         "results-numpieces_final_effnetv2s1",
         "results-numpieces_final_swinv2s1",
     ]
-    process_results(comparisons_architectures, "valid", labels=["ResNet50", "ResNeXt", "EffNetV2-S", "SwinV2-S"], set_title=False)
+    labels = ["ResNet50", "ResNeXt", "EffNetV2-S", "SwinV2-S"]
+    process_results(comparisons_architectures, "valid", labels=labels, legend_label="Models", set_title=False)
 
     """
     Efficient Net models
@@ -160,17 +160,19 @@ if __name__ == "__main__":
     """
 
     comparisons_augmentations = [effnet(1), effnet(2), effnet(8)]
-    process_results(comparisons_augmentations, "valid", labels=["Manual", "Random", "Auto"], set_title=False)
+    labels = ["Manual", "Random", "Auto"]
+    process_results(comparisons_augmentations, "valid", labels=labels, legend_label="Augmentations", set_title=False)
 
     comparisons_activations = [effnet(2), effnet(4), effnet(3)]
     labels = ["Sigmoid ($30 \\cdot \\sigma + 2$)", "ReLU", "ReLU ($scaling \\cdot ReLU + bias$)"]
-    process_results(comparisons_activations, "valid", labels=labels, set_title=False)
+    process_results(comparisons_activations, "valid", labels=labels, legend_label="Activations", set_title=False)
 
     comparisons_loss = [effnet(3), effnet(6) + "_smoothl1loss", effnet(7)]
-    process_results(comparisons_loss, "valid", labels=["MSE", "SmoothL1Loss", "L1Loss"], set_title=False)
+    labels = ["MSE", "SmoothL1Loss", "L1Loss"]
+    process_results(comparisons_loss, "valid", labels=labels, legend_label = "Losses", set_title=False)
 
     best_model = effnet(6) + "_smoothl1loss"
-    process_results([best_model], "valid", labels=["Best Model"], skip_single_plot_shows=False, set_title=False)
+    process_results([best_model], "valid", labels=["Best Model"], show_single_plots=True, set_title=False)
 
     # model_result_dirs = ["results-numpieces_final_effnetv2s3"]
     # process_results(model_result_dirs, "test")

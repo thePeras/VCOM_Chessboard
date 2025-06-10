@@ -9,6 +9,7 @@ from torchsummary import summary
 from board_draw import render_board_from_matrix
 from sklearn.metrics import r2_score, mean_absolute_error
 from matplotlib.widgets import Button
+import optuna
 
 from typing import Optional
 import pickle
@@ -217,13 +218,38 @@ class NumPiecesPredictor(nn.Module):
         self.scale = nn.Parameter(torch.tensor(1.0))
         self.bias = nn.Parameter(torch.tensor(2.0))
 
+    # Check https://docs.pytorch.org/vision/main/models.html for specific models and configs (e.g. pre-training image size)
+    @staticmethod
+    def create_efficient_net():
+        conv_model = models.efficientnet_v2_s(weights=models.EfficientNet_V2_S_Weights.DEFAULT)
+        conv_model.classifier[1] = nn.Linear(conv_model.classifier[1].in_features, out_features=1)
+        return NumPiecesPredictor(conv_model)
+
+    @staticmethod
+    def create_swin():
+        conv_model = models.swin_v2_s(weights=models.Swin_V2_S_Weights.DEFAULT)
+        conv_model.head = nn.Linear(in_features=conv_model.head.in_features, out_features=1)
+        return NumPiecesPredictor(conv_model)
+    
+    @staticmethod
+    def create_resnet():
+        conv_model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+        conv_model.fc = nn.Linear(in_features=conv_model.fc.in_features, out_features=1)
+        return NumPiecesPredictor(conv_model)
+
+    @staticmethod
+    def create_resnext():
+        conv_model = models.resnext101_64x4d(weights=models.ResNeXt101_64X4D_Weights.DEFAULT)
+        conv_model.fc = nn.Linear(conv_model.fc.in_features, out_features=1)
+        return NumPiecesPredictor(conv_model)
+    
     def _forward_sigmoid(self, x):  # initial sigmoid setup
         x = self.model(x)
         x = torch.sigmoid(x)          # (B, 1): [0, 1]
         x = x * 30 + 2                # Scale to (2, 32)
         return x.squeeze(1)           # Final shape: (B,)
 
-    def _forward_relu(self, x): # basic ReLU setup
+    def _forward_relu(self, x):     # basic ReLU setup
         x = self.model(x)
         x = self.activation(x)
         return x.squeeze(1)
@@ -631,21 +657,110 @@ def main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, d
             get_preds_fn=get_preds_chessboard,
         )
 
+def objective(trial, train_dataloader, valid_dataloader, device, epochs=15):
+    """
+    Defines a single trial for Optuna hyperparameter tuning.
+    """
+    # Suggest hyperparameters for optimizer, loss, etc.
+    lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
+    wd = trial.suggest_float("wd", 1e-4, 1e-1, log=True)
+    loss_name = trial.suggest_categorical("loss", ["L1Loss", "MSELoss", "SmoothL1Loss"])
+    optimizer_name = trial.suggest_categorical("optimizer", ["AdamW", "Adam"])
+    scheduler_name = trial.suggest_categorical("scheduler", ["StepLR", "CosineAnnealingLR", "ReduceLROnPlateau"])
+
+    # Initialize model
+    model = NumPiecesPredictor.create_efficient_net().to(device)
+
+    # Setup loss and optimizer
+    loss_fn = {"L1Loss": nn.L1Loss(), "MSELoss": nn.MSELoss(), "SmoothL1Loss": nn.SmoothL1Loss()}[loss_name]
+    optimizer = {
+        "AdamW": lambda: torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd),
+        "Adam": lambda: torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
+    }[optimizer_name]()
+
+    # Conditionally define scheduler and its hyperparameters
+    if scheduler_name == "StepLR":
+        step_size = trial.suggest_int("step_size", 5, 10)
+        gamma = trial.suggest_float("gamma", 0.1, 0.8)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+    elif scheduler_name == "CosineAnnealingLR":
+        # T_max is often set to the number of epochs
+        t_max = trial.suggest_int("t_max", 10, epochs)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max)
+    elif scheduler_name == "ReduceLROnPlateau":
+        # This scheduler reduces LR based on a monitored metric
+        patience = trial.suggest_int("patience", 2, 5)
+        factor = trial.suggest_float("factor", 0.1, 0.5)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=factor, patience=patience)
+
+    # Training loop
+    best_val_mae = float('inf')
+
+    for epoch in range(epochs):
+        # Train
+        epoch_iter_num_pieces(model, train_dataloader, loss_fn, optimizer=optimizer, is_training=True, device=device)
+
+        # Validate
+        _, val_mae, _, __ = epoch_iter_num_pieces(model, valid_dataloader, loss_fn, is_training=False, device=device)
+
+        # Step the scheduler
+        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            scheduler.step(val_mae) # This scheduler needs the metric
+        else:
+            scheduler.step()
+
+        if val_mae < best_val_mae:
+            best_val_mae = val_mae
+        
+        # Report intermediate results to the pruner
+        trial.report(val_mae, epoch)
+
+        # Handle pruning
+        if trial.should_prune():
+            raise optuna.exceptions.TrialPruned()
+
+    return best_val_mae
+
+def hyperparameter_tuning_optuna(args, train_dataloader, valid_dataloader, device):
+    """
+    Performs hyperparameter tuning for the number of pieces model using Optuna.
+    """
+    print(">> Starting Hyperparameter Tuning with Optuna")
+
+    epochs_per_trial = 15   # The number of epochs to train for each trial
+    n_trials = 50   # The number of different hyperparameter combinations to test
+
+    pruner = optuna.pruners.MedianPruner()
+    study = optuna.create_study(direction="minimize", pruner=pruner)
+
+    study.optimize(
+        lambda trial: objective(trial, train_dataloader, valid_dataloader, device, epochs=epochs_per_trial),
+        n_trials=n_trials
+    )
+
+    print("-" * 50)
+    print("Hyperparameter Tuning Finished!")
+    print(f"Number of finished trials: {len(study.trials)}")
+
+    print("Best trial:")
+    trial = study.best_trial
+
+    print(f"  Value (MAE): {trial.value}")
+
+    print("  Params: ")
+    for key, value in trial.params.items():
+        print(f"    {key}: {value}")
+
+    df = study.trials_dataframe()
+    save_filename = "optuna_tuning_results.csv"
+    df.to_csv(save_filename)
+    print(f"\nFull tuning results saved to '{save_filename}'")
 
 def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, device):
     save_dir = get_model_results_save_dir(args.model_name)
     model_save_path = os.path.join(save_dir, args.model_name + ".pth")
 
-    # Different models to manually setup
-    # conv_model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-    # conv_model.fc = nn.Linear(in_features=conv_model.fc.in_features, out_features=1)
-    # conv_model = models.resnext101_64x4d(weights=models.ResNeXt101_64X4D_Weights.DEFAULT)
-    # conv_model.fc = nn.Linear(conv_model.fc.in_features, out_features=1)
-    conv_model = models.efficientnet_v2_s(weights=models.EfficientNet_V2_S_Weights.DEFAULT) # requires different crop size
-    conv_model.classifier[1] = nn.Linear(conv_model.classifier[1].in_features, out_features=1)
-    # conv_model = models.swin_v2_s(weights=models.Swin_V2_S_Weights.DEFAULT)
-    # conv_model.head = nn.Linear(in_features=conv_model.head.in_features, out_features=1)    
-    model = NumPiecesPredictor(conv_model).to(device)
+    model = NumPiecesPredictor.create_efficient_net().to(device)
 
     # try
     # learning rates
@@ -712,7 +827,7 @@ def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, d
 def main():
     parser = argparse.ArgumentParser()
     # TODO: add something like is-delivery (e.g. mode "delivery") to read from input.json()
-    parser.add_argument("--mode", type=str, choices=["train", "infer-valid", "infer-test"], default="infer-test",
+    parser.add_argument("--mode", type=str, choices=["train", "infer-valid", "infer-test", "tune"], default="infer-test",
                         help="Whether to train a new model or run inference")
     parser.add_argument("--type", type=str, choices=["chessboard", "num-pieces"], default="num-pieces",
                         help="The type of the model to use/train")
@@ -723,8 +838,8 @@ def main():
     root_dir = "complete_dataset"
     images_dir = os.path.join(root_dir, "chessred")
 
+    # For no augmentations during training, replace data_aug with data_in
     train_dataset = ChessDataset(root_dir, images_dir, 'train', data_aug)
-    # train_dataset = ChessDataset(root_dir, images_dir, 'train', data_in)
     valid_dataset = ChessDataset(root_dir, images_dir, 'valid', data_in)
     test_dataset = ChessDataset(root_dir, images_dir, 'test', data_in)
 
@@ -738,12 +853,15 @@ def main():
     valid_dataloader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False)
     test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False)
 
-    # experiment(train_dataloader)  # uncomment to visualise train dataloader (mostly for augmentations)
+    # experiment(train_dataloader)  # uncomment to visualise train dataloader (mostly for visualizing augmentations)
     # exit(0)
 
     if args.type == "chessboard":
         main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, device)
     elif args.type == "num-pieces":
-        main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, device)
+        if args.mode == "tune":
+            hyperparameter_tuning_optuna(args, train_dataloader, valid_dataloader, device)
+        else:
+            main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, device)
 if __name__ == "__main__":
     main()
