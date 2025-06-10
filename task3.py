@@ -3,6 +3,11 @@ import cv2
 import numpy as np
 from shapely.geometry import Polygon
 from ultralytics import YOLO
+import chess
+import chess.svg
+import cairosvg
+import io
+from PIL import Image
 
 ##==================================== Square and Piece Detection Helpers ====================================================##
 
@@ -265,55 +270,85 @@ def convex_hull_intersection(poly1, poly2):
     return poly1
 
 ##==================================== Horse to detect the chessboard orientation ================================================##
-
 def find_orientation(image):
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        img_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        img_gray = image.copy()
+
+    # Safely unpack height and width
+    height, width = img_gray.shape[:2]
+
     horse_path = "figures/horse.png"
     horse_img = cv2.imread(horse_path, cv2.IMREAD_GRAYSCALE)
     
     if horse_img is None:
-        print("Could not load the horse template image")
-        return None
+        print("Could not load the horse template image from:", horse_path)
+        return None, None
 
-    height, width = image.shape
     corner_size = min(width, height) // 4
-    
-    orientations = {
-        "top_left": (image[:corner_size, :corner_size], cv2.rotate(horse_img, cv2.ROTATE_90_CLOCKWISE)),
-        "top_right": (image[:corner_size, width-corner_size:], cv2.rotate(horse_img, cv2.ROTATE_180)),
-        "bottom_left": (image[height-corner_size:, :corner_size], horse_img),
-        "bottom_right": (image[height-corner_size:, width-corner_size:], cv2.rotate(horse_img, cv2.ROTATE_90_COUNTERCLOCKWISE)),
-    }
-    
-    best_score = -1
+    orientations = {}
+    orientations["bottom_left"] = (
+        img_gray[height - corner_size : height, 0:corner_size],
+        horse_img,
+    )
+
+    orientations["top_left"] = (
+        img_gray[0:corner_size, 0:corner_size],
+        cv2.rotate(horse_img, cv2.ROTATE_90_CLOCKWISE),
+    )
+
+    orientations["top_right"] = (
+        img_gray[0:corner_size, width - corner_size : width],
+        cv2.rotate(horse_img, cv2.ROTATE_180),
+    )
+
+    orientations["bottom_right"] = (
+        img_gray[height - corner_size : height, width - corner_size : width],
+        cv2.rotate(horse_img, cv2.ROTATE_90_COUNTERCLOCKWISE),
+    )
+
+    best_score = -1.0
     best_match_loc = None
     best_rotation = None
-    
+
     for corner_name, (corner_img, horse_template) in orientations.items():
         target_size = corner_size // 4
-        resized_template = cv2.resize(horse_template, (target_size, target_size))
+        if target_size < 1:
+            continue
+
+        h_t, w_t = horse_template.shape[:2]
+
+        scale = target_size / max(h_t, w_t)
+        new_w = max(1, int(w_t * scale))
+        new_h = max(1, int(h_t * scale))
+        resized_template = cv2.resize(horse_template, (new_w, new_h), interpolation=cv2.INTER_AREA)
         
         if corner_img.shape[0] < resized_template.shape[0] or corner_img.shape[1] < resized_template.shape[1]:
             continue
-            
+
         result = cv2.matchTemplate(corner_img, resized_template, cv2.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-        
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
         if max_val > best_score:
             best_score = max_val
-            
-            if corner_name == "top_left":
-                match_x, match_y = max_loc
+            if corner_name == "bottom_left":
+                match_x = max_loc[0]
+                match_y = height - corner_size + max_loc[1]
+                best_rotation = None 
+            elif corner_name == "top_left":
+                match_x = max_loc[0]
+                match_y = max_loc[1]
                 best_rotation = cv2.ROTATE_90_COUNTERCLOCKWISE
             elif corner_name == "top_right":
-                match_x, match_y = width - corner_size + max_loc[0], max_loc[1]
+                match_x = width - corner_size + max_loc[0]
+                match_y = max_loc[1]
                 best_rotation = cv2.ROTATE_180
-            elif corner_name == "bottom_left":
-                match_x, match_y = max_loc[0], height - corner_size + max_loc[1]
-                best_rotation = None
             elif corner_name == "bottom_right":
-                match_x, match_y = width - corner_size + max_loc[0], height - corner_size + max_loc[1]
+                match_x = width - corner_size + max_loc[0]
+                match_y = height - corner_size + max_loc[1]
                 best_rotation = cv2.ROTATE_90_CLOCKWISE
-                
+
             best_match_loc = (match_x, match_y)
 
     return best_rotation, best_match_loc
@@ -406,13 +441,6 @@ def get_board_squares(corners, img, img_color, image_path):
     top_left, top_right = top_points
     bottom_left, bottom_right = bottom_points
 
-    # Draw the points on a copy of the original image
-    #points_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    #for pt in [top_left, top_right, bottom_left, bottom_right]:
-    #    cv2.circle(points_img, tuple(map(int, pt)), 25, (0, 0, 255), -1)
-    #cv2.drawContours(points_img, [largest_contour], 0, (0, 255, 0), 3)
-
-    # Define comparison points (destination corners)
     top_left_comp = (0, 0)
     bottom_left_comp = (0, img.shape[0])
     top_right_comp = (img.shape[1], 0)
@@ -508,20 +536,8 @@ def get_board_squares(corners, img, img_color, image_path):
         print(f"Using a {rows}x{cols} grid with {len(filtered_intersections)} intersections")
         found_all_intersections = False
 
-    return filtered_intersections, found_all_intersections
+    return filtered_intersections, found_all_intersections, warp_matrix, warped_color_img
 
-    # How to loop the squares
-    #for i in range(rows):
-    #    for j in range(cols):
-    #        if (i+1) * step + j + 1 < len(filtered_intersections):
-    #            square_corners = [
-    #                filtered_intersections[i * step + j],
-    #                filtered_intersections[i * step + j + 1],
-    #                filtered_intersections[(i + 1) * step + j + 1],
-    #                filtered_intersections[(i + 1) * step + j],
-    #            ]
-
-# rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR
 FEN_MAP = {
     "white-pawn": "P",
     "white-rock": "R", 
@@ -537,24 +553,125 @@ FEN_MAP = {
     "black-king": "k",
 }
 
-predicted_bboxs = []
 
-# 1. Get predicted bounding boxes as well classes from YOLO model
+def map_pieces_to_board(yolo_result, intersections, warp_matrix, fen_map):
+    board_matrix = [["" for _ in range(8)] for _ in range(8)]
+    if not intersections:
+        print("No intersections provided, cannot map pieces.")
+        return board_matrix
 
-# 2. Get corners of the chessboard from the image
+    piece_boxes = yolo_result.boxes.xyxy.cpu().numpy()
+    piece_classes = yolo_result.boxes.cls.cpu().numpy().astype(int)
+    class_names = yolo_result.names
 
-# 3. Get the intersections of the chessboard lines
+    grid_side_len = int(math.sqrt(len(intersections)))
 
-# 4. Iterate the squares from bottom to top and left to right and get the predicted bounding boxes that are inside the square. Generate the matrix
+    for i in range(len(piece_boxes)):
+        box = piece_boxes[i]
+        x1, y1, x2, y2 = box
+        
+        xb = (x1 + x2) / 2
+        yb = y1 * 0.1 + y2 * 0.9  
 
-# 5. Rotate matrix based on the orientation?
+        point_to_transform = np.array([[[xb, yb]]], dtype=np.float32)
+        
+        transformed_point = cv2.perspectiveTransform(point_to_transform, warp_matrix)
+        tx, ty = transformed_point[0][0]
+        
 
-# 6. Generate the FEN string from the matrix
+        found_square = False
+        for r in range(8):
+            for c in range(8):
+                top_left_idx = r * grid_side_len + c
+                top_right_idx = top_left_idx + 1
+                bottom_left_idx = (r + 1) * grid_side_len + c
+                
+                if (intersections[top_left_idx][0] < tx < intersections[top_right_idx][0] and
+                    intersections[top_left_idx][1] < ty < intersections[bottom_left_idx][1]):
+                    
+                    class_name = class_names[piece_classes[i]]
+                    fen_char = fen_map.get(class_name)
+                    
+                    if fen_char:
+                        board_matrix[r][c] = fen_char
+                    
+                    found_square = True
+                    break
+            if found_square:
+                break
+    
+    return board_matrix
 
-#image_rotation, horse_location = find_orientation(warped_gray_img)
-#if image_rotation is not None:
-#    rotated_img = cv2.rotate(warped_gray_img, image_rotation)
-#else:
-#    rotated_img = warped_gray_img.copy()
+def matrix_to_fen(board_matrix):
+    fen_rows = []
+    for row in board_matrix:
+        empty_count = 0
+        fen_row = ""
+        for cell in row:
+            if cell == "":
+                empty_count += 1
+            else:
+                if empty_count > 0:
+                    fen_row += str(empty_count)
+                    empty_count = 0
+                fen_row += cell
+        if empty_count > 0:
+            fen_row += str(empty_count)
+        fen_rows.append(fen_row)
+    return "/".join(fen_rows)
 
-# 7. Produce TWIN image using FEN
+# ==================================== Main Execution ====================================================
+
+model_path = "/home/adriano/Desktop/Projetos/chessboard-computer-vision/models/myYolov8n/weights/best.pt"
+image_path = "/home/adriano/Desktop/Projetos/chessboard-computer-vision/data/images/G000_IMG062.jpg"
+
+print("Loading YOLO model and predicting pieces...")
+model = YOLO(model_path)
+results = model.predict(image_path, verbose=False)
+yolo_result = results[0]
+
+print("Detecting chessboard corners...")
+corners = get_board_cornes(image_path)
+if not corners or len(corners) != 4:
+    print("Error: Could not find chessboard corners. Exiting.")
+else:
+    # 3. Get the board grid, warp matrix, and rectified image
+    print("Correcting perspective and finding grid...")
+    img_color = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    img_gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+    
+    intersections, all_found, warp_matrix, warped_img = get_board_squares(corners, img_gray, img_color, image_path)
+
+    if not all_found:
+        print(f"Warning: Only found {len(intersections)}/81 intersections. FEN may be inaccurate.")
+
+    if intersections:
+        # 4. Map the detected pieces to the board matrix
+        print("Mapping pieces to squares...")
+        board_matrix = map_pieces_to_board(yolo_result, intersections, warp_matrix, FEN_MAP)
+        
+        # 5. Determine board orientation and rotate matrix if necessary
+        print("Determining board orientation...")
+        rotation, _ = find_orientation(warped_img) # Use the warped image for reliability
+        
+        # If the horse is found in the top_right or top_left, the board is effectively
+        # upside down from white's perspective.
+        if rotation in [cv2.ROTATE_180, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE]:
+            print("Board appears to be from Black's perspective. Rotating matrix 180 degrees.")
+            # Rotate matrix 180 degrees
+            board_matrix = [row[::-1] for row in board_matrix[::-1]]
+
+        # 6. Compute and print the final FEN string
+        fen_string = matrix_to_fen(board_matrix)
+        
+        print("\nDetected Board State:")
+        for row in board_matrix:
+            print(" | ".join(f"{c or '.':>1}" for c in row))
+
+        board = chess.Board(fen_string)
+        fen_svg = chess.svg.board(board=board)
+        output_filename = "chessboard_render.png"
+        cairosvg.svg2png(bytestring=fen_svg.encode('utf-8'), write_to=output_filename)
+        print(f"Chessboard image saved to {output_filename}")
+    else:
+        print("Error: Could not determine the board grid. Cannot generate FEN.")
