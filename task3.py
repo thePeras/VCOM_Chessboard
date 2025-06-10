@@ -8,6 +8,9 @@ import chess.svg
 import io
 from PIL import Image
 from editdistance import eval as edit_distance
+import re
+import json
+import os
 
 ##==================================== Square and Piece Detection Helpers ====================================================##
 
@@ -621,7 +624,15 @@ def matrix_to_fen(board_matrix):
     return "/".join(fen_rows)
 
 
-def evaluate_fen(board_matrix, image_path):
+def get_ground_truth_fen(image_path):
+    img_id = int(re.search(r'IMG(\d+)', image_path).group(1))
+    with open('annotations_fen.json', 'r') as f:
+        data = json.load(f)
+    fen_str = data[str(img_id)]
+    return fen_str
+
+
+def process_fen(board_matrix, image_path):
     def fen_to_full_str(fen_str):
         result = ""
         for char in fen_str:
@@ -632,12 +643,11 @@ def evaluate_fen(board_matrix, image_path):
         return result
 
     pred_fen = matrix_to_fen(board_matrix)
-    exp_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+    exp_fen = get_ground_truth_fen(image_path)
 
     pred_string = "/".join("".join(row) for row in board_matrix)
     exp_string = fen_to_full_str(exp_fen)
     
-    # raw edit distance between 2 strings
     edit_dist = edit_distance(pred_string, exp_string)
     
     return {"pred_fen":pred_fen, "edit_dist":edit_dist}
@@ -645,48 +655,64 @@ def evaluate_fen(board_matrix, image_path):
 # ==================================== Main Execution ====================================================
 
 model_path = "models/myYolov8n/weights/best.pt"
-image_path = "data/images/G000_IMG062.jpg"
-
-print("Loading YOLO model and predicting pieces...")
+image_directory = "data/images/"
 model = YOLO(model_path)
-results = model.predict(image_path, verbose=False)
-yolo_result = results[0]
 
-print("Detecting chessboard corners...")
-corners = get_board_cornes(image_path)
-if not corners or len(corners) == 4:
-    print("Error: Could not find chessboard corners. Exiting.")
+edit_distances = []
 
-# 3. Get the board grid, warp matrix, and rectified image
-print("Correcting perspective and finding grid...")
-img_color = cv2.imread(image_path, cv2.IMREAD_COLOR)
-img_gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+# iterate on "data/images/"
+for filename in os.listdir(image_directory):
+    if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+        image_path = os.path.join(image_directory, filename)
+        print(f"\n--- Processing {filename} ---")
 
-intersections, all_found, warp_matrix, warped_img = get_board_squares(corners, img_gray, img_color, image_path)
+        print("Loading YOLO model and predicting pieces...")
+        results = model.predict(image_path, verbose=False)
+        yolo_result = results[0]
 
-if not all_found:
-    print(f"Warning: Only found {len(intersections)}/81 intersections. FEN may be inaccurate.")
-    if not intersections:
-        print("Error: Could not determine the board grid. Cannot generate FEN.")
-        exit(1)
+        print("Detecting chessboard corners...")
+        corners = get_board_cornes(image_path)
+        if not corners or len(corners) != 4:
+            print("Error: Could not find chessboard corners. Skipping file.")
+            continue # Skip to the next image
 
-# 4. Map the detected pieces to the board matrix
-print("Mapping pieces to squares...")
-board_matrix = map_pieces_to_board(yolo_result, intersections, warp_matrix, FEN_MAP)
+        # 3. Get the board grid, warp matrix, and rectified image
+        print("Correcting perspective and finding grid...")
+        img_color = cv2.imread(image_path, cv2.IMREAD_COLOR)
+        img_gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
 
-# 5. Determine board orientation and rotate matrix if necessary
-print("Determining board orientation...")
-rotation, _ = find_orientation(warped_img) # Use the warped image for reliability
+        intersections, all_found, warp_matrix, warped_img = get_board_squares(corners, img_gray, img_color, image_path)
 
-# If the horse is found in the top_right or top_left, the board is effectively
-# upside down from white's perspective.
-if rotation in [cv2.ROTATE_180, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE]:
-    print("Board appears to be from Black's perspective. Rotating matrix 180 degrees.")
-    # Rotate matrix 180 degrees
-    board_matrix = [row[::-1] for row in board_matrix[::-1]]
+        if not all_found:
+            print(f"Warning: Only found {len(intersections)}/81 intersections. FEN may be inaccurate.")
+            if not intersections:
+                print("Error: Could not determine the board grid. Skipping file.")
+                continue # Skip to the next image
 
-# 6. Compute and print the final FEN string
-print(evaluate_fen(board_matrix, image_path))
+        # 4. Map the detected pieces to the board matrix
+        print("Mapping pieces to squares...")
+        board_matrix = map_pieces_to_board(yolo_result, intersections, warp_matrix, FEN_MAP)
+
+        # 5. Determine board orientation and rotate matrix if necessary
+        print("Determining board orientation...")
+        rotation, _ = find_orientation(warped_img) # Use the warped image for reliability
+
+        # If the board is detected as being from Black's perspective, rotate it
+        if rotation in [cv2.ROTATE_180, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE]:
+            print("Board appears to be from Black's perspective. Rotating matrix 180 degrees.")
+            board_matrix = [row[::-1] for row in board_matrix[::-1]]
+
+        # 6. Compute and print the final FEN string
+        result = process_fen(board_matrix, image_path)
+        edit_distances.append(result['edit_dist'])
+
+if edit_distances:
+    mean_dist = np.mean(edit_distances)
+    print(f'\nMean edit distance across {len(edit_distances)} images: {mean_dist:.4f}')
+else:
+    print("No images were processed or no edit distances were calculated.")
+
+
 """
 board = chess.Board(fen_string)
 fen_svg = chess.svg.board(board=board)
