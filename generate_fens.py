@@ -56,6 +56,7 @@ def main():
 
     # Group pieces by image_id
     pieces = data.get('annotations', {}).get('pieces', [])
+    images = data.get('images', [])
     pieces_by_image = defaultdict(list)
     for piece in pieces:
         if piece['image_id'] in valid_ids:
@@ -64,7 +65,7 @@ def main():
     # Create fen_annotations dict
     fen_annotations = {}
     for image_id in valid_ids:
-        fen_annotations[str(image_id)] = pieces_to_fen(pieces_by_image.get(image_id, []))
+        fen_annotations[images[image_id]["file_name"]] = pieces_to_fen(pieces_by_image.get(image_id, []))
 
     with open('annotations_fen.json', 'w') as f:
         json.dump(fen_annotations, f, indent=2)
