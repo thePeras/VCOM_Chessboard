@@ -861,9 +861,9 @@ def compute_intersections(verticals, horizontals):
 def filter_intersections_by_distance(intersections, center):
     """
     Choose the 81 intersections that are closest to the center of the board,
-    ensuring each point is at least 270 pixels away from any other selected point.
+    ensuring each point is at least X pixels away from any other selected point.
     """
-    MIN_DISTANCE_BETWEEN_2_POINTS = 270
+    MIN_DISTANCE_BETWEEN_2_POINTS = 300
 
     x_center, y_center = center
     distances = []
@@ -1888,17 +1888,17 @@ def main(process_all: bool = True):
 
     # --- Configure output options ---
     output_config = {
-        'original': False,
-        'corners': False,
-        'threshold': False,
-        'warped': False,
+        'original': True,
+        'corners': True,
+        'threshold': True,
+        'warped': True,
         'warped_color': False,
         'clahe': False,
         'blurred_warp': False,
         'canny_edges': False,
         'dilated': False,
-        'hough_lines': False,
-        'hough_lines_rectified': False,
+        'hough_lines': True,
+        'hough_lines_rectified': True,
         'filtered_intersections': False,
         'pieces_gc': False,
         'grabcut_mask': False,
@@ -1923,8 +1923,8 @@ def main(process_all: bool = True):
         "white_val_mask": False,
         'bboxes_orig': False,
         'pieces': False,
-        'horse': False,
-        'rotated': False,
+        'horse': True,
+        'rotated': True,
         'watershed_black_mask': False,
         'watershed_final_hint_mask': False,
     }
@@ -1945,7 +1945,49 @@ def main(process_all: bool = True):
             stitch_images(output_dir, image_type=key)
 
 if __name__ == "__main__":
-    process_input(output_dir=None, output_config={}, is_delivery=True, eval_predictions=False)
+    output_config = {
+        'original': True,
+        'corners': True,
+        'threshold': True,
+        'warped': True,
+        'warped_color': False,
+        'clahe': False,
+        'blurred_warp': False,
+        'canny_edges': False,
+        'dilated': False,
+        'hough_lines': True,
+        'hough_lines_rectified': True,
+        'filtered_intersections': True,
+        'pieces_gc': False,
+        'grabcut_mask': False,
+        'grabcut_fg_ratios': False,
+        'grabcut_hint_mask': False,
+        'gc_watershed_sure_fg': False,
+        'gc_watershed_sure_bg': False,
+        'gc_watershed_unknown': False,
+        'watershed_vis': False,
+        'contours_watershed': False,
+        'black_pieces_mask': False,
+        'black_pieces_mask_morph': False,
+        'white_pieces_mask': False,
+        'white_pieces_mask_morph': False,
+        'piece_contours': False,
+        'bboxes': False,
+        "black_hue_mask": False,
+        "black_sat_mask": False,
+        "black_val_mask": False,
+        "white_hue_mask": False,
+        "white_sat_mask": False,
+        "white_val_mask": False,
+        'bboxes_orig': False,
+        'pieces': False,
+        'horse': True,
+        'rotated': True,
+        'watershed_black_mask': False,
+        'watershed_final_hint_mask': False,
+    }
+    
+    process_input(output_dir='output_images', output_config=output_config, is_delivery=True, eval_predictions=False)
 
     # main(process_all=True)
 

@@ -14,6 +14,7 @@ import os
 import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import pandas as pd
 
 ##==================================== Square and Piece Detection Helpers ====================================================##
 
@@ -101,9 +102,9 @@ def compute_intersections(verticals, horizontals):
 def filter_intersections_by_distance(intersections, center):
     """
     Choose the 81 intersections that are closest to the center of the board,
-    ensuring each point is at least 270 pixels away from any other selected point.
+    ensuring each point is at least X pixels away from any other selected point.
     """
-    MIN_DISTANCE_BETWEEN_2_POINTS = 270
+    MIN_DISTANCE_BETWEEN_2_POINTS = 300
 
     x_center, y_center = center
     distances = []
@@ -317,6 +318,7 @@ def find_orientation(image):
     best_score = -1.0
     best_match_loc = None
     best_rotation = None
+    best_corner = None
 
     for corner_name, (corner_img, horse_template) in orientations.items():
         target_size = corner_size // 4
@@ -356,8 +358,9 @@ def find_orientation(image):
                 best_rotation = cv2.ROTATE_90_CLOCKWISE
 
             best_match_loc = (match_x, match_y)
+            best_corner = corner_name
 
-    return best_rotation, best_match_loc
+    return best_rotation, best_match_loc, best_corner
 
 
 def get_board_cornes(
@@ -655,39 +658,17 @@ def process_fen(board_matrix, filename):
     return {"pred_fen":pred_fen, "exp_fen": exp_fen, "edit_dist":edit_dist}
 
 
-
 def rotate_matrix(rotation, board_matrix):
-    """
-    Rotates a 2D matrix based on OpenCV rotation flags.
-
-    Args:
-        rotation (int): The rotation flag from cv2 (e.g., cv2.ROTATE_90_CLOCKWISE).
-        board_matrix (list of lists): The 8x8 matrix representing the chessboard.
-
-    Returns:
-        list of lists: The rotated matrix.
-    """
-    # Convert the board matrix to a NumPy array for efficient rotation
     np_matrix = np.array(board_matrix)
-
-    # Determine the number of 90-degree rotations (k) for np.rot90
-    # k=1 rotates 90 degrees counter-clockwise
     if rotation == cv2.ROTATE_90_CLOCKWISE:
-        # One 90-degree clockwise rotation is equivalent to three counter-clockwise rotations
         rotated_matrix = np.rot90(np_matrix, k=-1)
     elif rotation == cv2.ROTATE_180:
-        # A 180-degree rotation
         rotated_matrix = np.rot90(np_matrix, k=2)
     elif rotation == cv2.ROTATE_90_COUNTERCLOCKWISE:
-        # A 90-degree counter-clockwise rotation
         rotated_matrix = np.rot90(np_matrix, k=1)
     else:
-        # If no rotation is needed, return the original matrix
         return board_matrix
-
-    # Convert the rotated NumPy array back to a list of lists
     return rotated_matrix.tolist()
-
 
 
 # ==================================== Main Execution ====================================================
@@ -695,75 +676,30 @@ def rotate_matrix(rotation, board_matrix):
 #model_path = "models/myYolov8n/weights/best.pt"
 model_path = "models/myYolo11s/weights/best.pt"
 image_directory = "complete_dataset/images/"
-model = YOLO(model_path)
-
+mismatches_path = "mismatches/task3/mismatch_log.csv"
 
 def process_single_image(filename):
-    image_path = os.path.join(image_directory, filename)
+    model = YOLO(model_path)
     print(f"\n--- Processing {filename} ---")
 
     # 1. Predict pieces
     print("Predicting pieces...")
-    results = model.predict(image_path, verbose=False)
+    results = model.predict(filename, verbose=False)
     yolo_result = results[0]
 
     # 2. Detect corners
     print("Detecting chessboard corners...")
-    corners = get_board_cornes(image_path)
+    corners = get_board_cornes(filename)
     if not corners or len(corners) != 4:
         print("Error: Could not find chessboard corners. Skipping file.")
 
     # 3. Rectify perspective
     print("Correcting perspective and finding grid...")
-    img_color = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    img_color = cv2.imread(filename, cv2.IMREAD_COLOR)
     img_gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
-    intersections, all_found, warp_matrix, warped_img = get_board_squares(corners, img_gray, img_color, image_path)
+    intersections, all_found, warp_matrix, warped_img = get_board_squares(corners, img_gray, img_color, filename)
 
-    if not intersections:
-        print("Error: Could not determine the board grid. Skipping file.")
-
-    # 4. Map pieces to board
-    print("Mapping pieces to squares...")
-    board_matrix = map_pieces_to_board(yolo_result, intersections, warp_matrix, FEN_MAP)
-
-    # 5. Determine orientation
-    print("Determining board orientation...")
-    rotation, _ = find_orientation(warped_img)
-    if rotation in [cv2.ROTATE_180, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE]:
-        board_matrix = rotate_matrix(rotation, board_matrix)
-
-    # 6. Compute FEN and get edit distance
-    # Assumes process_fen returns a dict with 'edit_dist', 'fen', and 'true_fen'
-    return process_fen(board_matrix, filename)
-
-
-def process_single_image_with_model(filename):
-    """Wrapper function that creates its own model instance for thread safety"""
-    # Create a separate model instance for this thread
-    thread_model = YOLO(model_path)
-    
-    image_path = filename
-    print(f"\n--- Processing {filename} ---")
-
-    # 1. Predict pieces
-    print("Predicting pieces...")
-    results = thread_model.predict(image_path, verbose=False)
-    yolo_result = results[0]
-
-    # 2. Detect corners
-    print("Detecting chessboard corners...")
-    corners = get_board_cornes(image_path)
-    if not corners or len(corners) != 4:
-        print("Error: Could not find chessboard corners. Skipping file.")
-        return None
-
-    # 3. Rectify perspective
-    print("Correcting perspective and finding grid...")
-    img_color = cv2.imread(image_path, cv2.IMREAD_COLOR)
-    img_gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
-    intersections, all_found, warp_matrix, warped_img = get_board_squares(corners, img_gray, img_color, image_path)
-
-    if not intersections:
+    if not intersections or not all_found:
         print("Error: Could not determine the board grid. Skipping file.")
         return None
 
@@ -773,52 +709,38 @@ def process_single_image_with_model(filename):
 
     # 5. Determine orientation
     print("Determining board orientation...")
-    rotation, _ = find_orientation(warped_img)
+    rotation, _, corner = find_orientation(warped_img)
+    print(f"Horse detected at corner: {corner}")
     if rotation in [cv2.ROTATE_180, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE]:
         board_matrix = rotate_matrix(rotation, board_matrix)
 
     # 6. Compute FEN and get edit distance
-    return process_fen(board_matrix, filename)
+    print("Processing FEN")
+    fen_results = process_fen(board_matrix, filename)
+    return fen_results
 
 
-def process_all_images():
+def process_list(image_files):
     edit_distances = []
-    csv_filepath = "mismatches/task3/mismatch_log.csv"
     csv_headers = ['filename', 'predicted_fen', 'true_fen', 'edit_distance']
     
     # Thread-safe lock for writing to CSV and updating edit_distances
     csv_lock = threading.Lock()
     
-    all_folders = os.listdir(image_directory)
-    image_files = []
-    for folder in all_folders:
-        folder_path = os.path.join(image_directory, folder)
-        if os.path.isdir(folder_path):
-            for filename in os.listdir(folder_path):
-                if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    image_files.append(os.path.join(folder_path, filename))
-
-    # Get all image files
-    #image_files = [filename for filename in os.listdir(image_directory) 
-    #               if filename.lower().endswith(('.png', '.jpg', '.jpeg'))]
-    
-    with open(csv_filepath, 'w', newline='', encoding='utf-8') as csvfile:
+    with open(mismatches_path, 'w', newline='', encoding='utf-8') as csvfile:
         csv_writer = csv.writer(csvfile)
         csv_writer.writerow(csv_headers)
         
         # Use ThreadPoolExecutor for parallel processing
         with ThreadPoolExecutor(max_workers=4) as executor:  # Adjust max_workers as needed
             # Submit all tasks using the thread-safe wrapper function
-            future_to_filename = {executor.submit(process_single_image_with_model, filename): filename 
-                                for filename in image_files}
+            future_to_filename = {executor.submit(process_single_image, filename): filename for filename in image_files}
             
             # Process completed tasks
             for future in as_completed(future_to_filename):
                 filename = future_to_filename[future]
                 try:
                     img_results = future.result()
-                    
-                    # Skip if processing failed
                     if img_results is None:
                         continue
                         
@@ -842,17 +764,34 @@ def process_all_images():
                     with csv_lock:
                         csv_writer.writerow([filename, 'ERROR', str(e), -1])
 
-    if edit_distances:
-        mean_dist = np.mean(edit_distances)
-        print(f'\nMean edit distance across {len(edit_distances)} images: {mean_dist:.4f}')
-    else:
-        print("\nNo images were processed.")
-
-    print(f"Mismatch log saved to: {csv_filepath}")
+    mean_dist = np.mean(edit_distances)
+    print(f'\nMean edit distance across {len(edit_distances)} images: {mean_dist:.4f}')
+    print(f"Mismatch log saved to: {mismatches_path}")
 
 
-#process_single_image("G083_IMG073.jpg")
-process_all_images()
+def process_all_images():
+    all_folders = os.listdir(image_directory)
+    image_files = []
+    for folder in all_folders:
+        folder_path = os.path.join(image_directory, folder)
+        if os.path.isdir(folder_path):
+            for filename in os.listdir(folder_path):
+                if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    image_files.append(os.path.join(folder_path, filename))
+    process_list(image_files)
+
+
+def process_mismatches():
+    mismatches = pd.read_csv(mismatches_path)
+    if mismatches.empty:
+        print("No mismatches found.")
+        return
+    process_list(list(mismatches['filename']))
+
+
+#print(process_single_image("complete_dataset/images/56/G056_IMG023.jpg"))
+#process_all_images()
+process_mismatches()
 
 """
 board = chess.Board(fen_string)
@@ -861,3 +800,18 @@ output_filename = "chessboard_render.png"
 cairosvg.svg2png(bytestring=fen_svg.encode('utf-8'), write_to=output_filename)
 print(f"Chessboard image saved to {output_filename}")
 """
+
+# complete_dataset/images/56/G056_IMG023.jpg
+# 2r3q1/k1ppp1bp/p3p1b1/5n2/4N3/4NP2/P1PPPB1P/2R2Q
+# r2q1rk1/ppp1bppp/2p1b3/3n4/2N5/2NP3P/PPPB1PP1/R2Q2KR
+# 19
+
+# complete_dataset/images/58/G033_IMG011.jpg,
+# RP4pr/NP4p1/BP1B1npb/Q2p2pq/3n3k/RPN3pb/KP4p1/1P4pr
+# r1bqkb1r/pppp1ppp/2n5/8/2Bpn3/5N2/PPP2PPP/RNBQ1RK1
+# 45
+
+# complete_dataset/images/33/G033_IMG011.jpg
+# R3P1pr/1P4pn/BPN2pqb/Q2P1p2/K2Pp2k/BPN2npb/1P4p1/RP4pr
+# rnb1kb1r/ppq2ppp/2pp1n2/P3p3/3PP3/2N2N2/1PP2PPP/R1BQKB1R
+# 40

@@ -3,9 +3,11 @@ import json
 import numpy as np
 
 # === Paths ===
-ANNOTATION_PATH = 'chessboard-cv/annotations.json'
-LABELS_DIR = 'chessboard-cv/dataset_corners/labels' 
-SPLITS_DIR = 'chessboard-cv/dataset_corners/splits'   
+ANNOTATION_PATH = 'complete_dataset/annotations.json'
+LABELS_DIR = 'complete_dataset/dataset_corners/labels' 
+SPLITS_DIR = 'complete_dataset/dataset_corners/splits'   
+FULL_DATASET = True
+
 
 # === Load annotation ===
 with open(ANNOTATION_PATH, 'r') as f:
@@ -89,12 +91,13 @@ os.makedirs(SPLITS_DIR, exist_ok=True)
 image_id_to_file = {img['id']: img['path'] for img in data['images']}
 
 for split in ['train', 'val', 'test']:
-    if split in data['splits']['chessred2k']:
-        ids = data['splits']['chessred2k'][split]['image_ids']
-        with open(f"{SPLITS_DIR}/{split}.txt", 'w') as f:
-            for img_id in ids:
-                fname = image_id_to_file.get(img_id)
-                if fname:
-                    f.write(f"../images/{fname.split('images/')[1]}\n")
+
+    ids = data['splits'][split]['image_ids'] if FULL_DATASET else data['splits']['chessred2k'][split]['image_ids']
+
+    with open(f"{SPLITS_DIR}/{split}.txt", 'w') as f:
+        for img_id in ids:
+            fname = image_id_to_file.get(img_id)
+            if fname:
+                f.write(f"../images/{fname.split('images/')[1]}\n")
 
 print(f"Successfully generated split files in '{SPLITS_DIR}'")
