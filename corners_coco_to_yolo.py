@@ -1,16 +1,11 @@
 import os
 import json
+import numpy as np
 
 # === Paths ===
-ANNOTATION_PATH = 'complete_dataset/annotations.json'
-LABELS_DIR = 'complete_dataset/corners/labels'
-
-# === Constants for corner annotations ===
-POINT_SIZE_NORM = 0.01 
-
-CORNER_NAMES = ["top_left", "top_right", "bottom_right", "bottom_left"] 
-CORNER_TO_CLASS_ID = {name: i for i, name in enumerate(CORNER_NAMES)}
-CLASS_ID_TO_CORNER_NAME = {i: name for i, name in enumerate(CORNER_NAMES)}
+ANNOTATION_PATH = 'chessboard-cv/annotations.json'
+LABELS_DIR = 'chessboard-cv/dataset_corners/labels' 
+SPLITS_DIR = 'chessboard-cv/dataset_corners/splits'   
 
 # === Load annotation ===
 with open(ANNOTATION_PATH, 'r') as f:
@@ -22,68 +17,84 @@ annotations = data['annotations']['corners']
 ann_by_image = {}
 for ann in annotations:
     if 'corners' not in ann or not isinstance(ann['corners'], dict) or len(ann['corners']) != 4:
-        print(f"Skipping annotation id {ann.get('id', 'N/A')} for image_id {ann.get('image_id', 'N/A')} due to missing/invalid 'corners' field.")
         continue
-
     img_id = ann['image_id']
-    ann_by_image.setdefault(img_id, []).append(ann)
+    ann_by_image[img_id] = ann 
 
-category_freq = {}
+os.makedirs(LABELS_DIR, exist_ok=True)
+
+KEYPOINT_ORDER = ["top_left", "top_right", "bottom_right", "bottom_left"]
 
 for img_id, image_info in images.items():
-    path = image_info['path']  
+    if img_id not in ann_by_image:
+        continue
+
+    ann = ann_by_image[img_id]
     img_width = image_info['width']
     img_height = image_info['height']
-    base_name = path.replace(".jpg", ".txt")
-    base_name = base_name.split("images/")[1]
-    
-    label_path = os.path.join(LABELS_DIR, base_name)
 
+    # Get path for label file
+    base_name = image_info['path'].replace(".jpg", ".txt").split("images/")[1]
+    label_path = os.path.join(LABELS_DIR, base_name)
     os.makedirs(os.path.dirname(label_path), exist_ok=True)
 
-    anns_for_image = ann_by_image.get(img_id, [])
+    # --- Collect and Sort Corner Coordinates ---
+    points = []
+    for keypoint_name in KEYPOINT_ORDER:
+        coords = ann['corners'].get(keypoint_name)
+        if coords:
+            points.append(coords)
 
-    with open(label_path, 'w') as f: # ann contains 'corners' dict
-            for corner_name, coords in ann['corners'].items():
-                if corner_name not in CORNER_TO_CLASS_ID:
-                    print(f"Warning: Unknown corner name '{corner_name}' in image_id {img_id}. Skipping this corner.")
-                    continue
-                
-                class_id = CORNER_TO_CLASS_ID[corner_name]
-                category_freq[class_id] = category_freq.get(class_id, 0) + 1
+    # Ensure we have all 4 corners
+    if len(points) != 4:
+        print(f"Warning: Missing corners for image_id {img_id}. Skipping.")
+        continue
+    
+    points = np.array(points) # Shape: (4, 2)
 
-                cx, cy = coords
+    # --- Calculate Bounding Box from Corners ---
+    min_x, min_y = points.min(axis=0)
+    max_x, max_y = points.max(axis=0)
 
-                # Convert to YOLO format (normalized)
-                # For corners, (cx, cy) is the center.
-                # Width and height are small fixed values.
-                x_center_norm = cx / img_width
-                y_center_norm = cy / img_height
-                w_norm = POINT_SIZE_NORM 
-                h_norm = POINT_SIZE_NORM
+    # Bounding box parameters
+    box_w = max_x - min_x
+    box_h = max_y - min_y
+    box_cx = min_x + box_w / 2
+    box_cy = min_y + box_h / 2
 
-                f.write(f"{class_id} {x_center_norm:.6f} {y_center_norm:.6f} {w_norm:.6f} {h_norm:.6f}\n")
+    # --- Normalize Everything ---
+    box_cx_norm = box_cx / img_width
+    box_cy_norm = box_cy / img_height
+    box_w_norm = box_w / img_width
+    box_h_norm = box_h / img_height
 
-# === Print category stats ===
-print("\nCategory Frequencies for Corners:")
-for category_id, freq in sorted(category_freq.items()):
-    corner_name = CLASS_ID_TO_CORNER_NAME.get(category_id, f"Unknown ID {category_id}")
-    print(f"Category {category_id} ({corner_name}): {freq} occurrences")
+    keypoints_norm = (points / [img_width, img_height]).flatten()
 
-# === Write split .txt files ===
-SPLITS_DIR = 'complete_dataset/corners/splits'
+    # --- Write Label File ---
+    with open(label_path, 'w') as f:
+        # Class ID for "chessboard" is 0
+        class_id = 0
+        
+        # Write bounding box
+        f.write(f"{class_id} {box_cx_norm:.6f} {box_cy_norm:.6f} {box_w_norm:.6f} {box_h_norm:.6f} ")
+        
+        # Write keypoints
+        kpt_str = " ".join([f"{coord:.6f}" for coord in keypoints_norm])
+        f.write(kpt_str + "\n")
+
+print(f"Successfully generated keypoint labels in '{LABELS_DIR}'")
+
+# --- Write Split Files ---
 os.makedirs(SPLITS_DIR, exist_ok=True)
-
-SPLITS = data['splits']['chessred2k']
 image_id_to_file = {img['id']: img['path'] for img in data['images']}
 
 for split in ['train', 'val', 'test']:
-    ids = SPLITS[split]['image_ids']
-    with open(f"{SPLITS_DIR}/{split}.txt", 'w') as f:
-        for img_id in ids:
-            fname = image_id_to_file.get(img_id)
-            if fname:
-                f.write(f"complete_dataset/{fname}\n")
+    if split in data['splits']['chessred2k']:
+        ids = data['splits']['chessred2k'][split]['image_ids']
+        with open(f"{SPLITS_DIR}/{split}.txt", 'w') as f:
+            for img_id in ids:
+                fname = image_id_to_file.get(img_id)
+                if fname:
+                    f.write(f"../images/{fname.split('images/')[1]}\n")
 
-
-
+print(f"Successfully generated split files in '{SPLITS_DIR}'")
