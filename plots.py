@@ -169,10 +169,7 @@ if __name__ == "__main__":
 
     comparisons_loss = [effnet(3), effnet(6) + "_smoothl1loss", effnet(7)]
     labels = ["MSE", "SmoothL1Loss", "L1Loss"]
-    process_results(comparisons_loss, "valid", labels=labels, legend_label = "Losses", set_title=False)
+    process_results(comparisons_loss, "valid", labels=labels, legend_label="Losses", set_title=False)
 
-    best_model = effnet(6) + "_smoothl1loss"
+    best_model = "results-best_model"
     process_results([best_model], "valid", labels=["Best Model"], show_single_plots=True, set_title=False)
-
-    model_result_dirs = ["results-numpieces_final_effnetv2s3"]
-    process_results(model_result_dirs, "test")
