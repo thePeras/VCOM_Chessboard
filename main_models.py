@@ -231,7 +231,7 @@ class NumPiecesPredictor(nn.Module):
         super().__init__()
         self.model = model
         self.activation = nn.ReLU()
-        self.scale = nn.Parameter(torch.tensor(1.0))
+        self.scale = nn.Parameter(torch.tensor(1.0))    # Learnable scaling and bias for ReLU
         self.bias = nn.Parameter(torch.tensor(2.0))
 
     # Check https://docs.pytorch.org/vision/main/models.html for specific models and configs (e.g. pre-training image size)
@@ -270,16 +270,26 @@ class NumPiecesPredictor(nn.Module):
         x = self.activation(x)
         return x.squeeze(1)
 
-    def _forward_relu2(self, x):    # The most promising results
+    def _learnable_forward_relu(self, x):    # The most promising results
         x = self.model(x)
         x = self.activation(x)
         x = x * self.scale + self.bias  # scale it given learnable parameters
         return x.squeeze(1)
 
     def forward(self, x):
-        return self._forward_relu2(x)
+        return self._learnable_forward_relu(x)
 
-def epoch_iter(model, dataloader, loss_fn, get_targets_fn, calculate_metric_fn, get_preds_fn=None, optimizer=None, is_training=True, device='cuda'):
+def epoch_iter(
+    model,
+    dataloader,
+    loss_fn,
+    get_targets_fn,
+    calculate_metric_fn,
+    get_preds_fn=None,
+    optimizer=None,
+    is_training=True,
+    device='cuda',
+):
     model.train() if is_training else model.eval()
     context = torch.enable_grad() if is_training else torch.no_grad()
     total_loss = 0
@@ -493,7 +503,7 @@ def experiment(dataloader):
         imgs = torch.clamp(imgs, 0, 1)  # Ensure values are in [0,1] for display
 
         num_images = imgs.shape[0]
-        current_idx = [0]  # Use list for mutability in inner scope
+        current_idx = [0]
 
         fig, ax = plt.subplots()
         plt.subplots_adjust(bottom=0.2)
@@ -681,8 +691,8 @@ def objective(trial, train_dataloader, valid_dataloader, device, epochs=15):
     lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
     wd = trial.suggest_float("wd", 1e-4, 1e-1, log=True)
     loss_name = trial.suggest_categorical("loss", ["L1Loss", "MSELoss", "SmoothL1Loss"])
-    # optimizer_name = trial.suggest_categorical("optimizer", ["AdamW", "Adam"])
-    optimizer_name = "AdamW"
+
+    optimizer_name = "AdamW"    # To reduce the search space, we only used AdamW
     scheduler_name = trial.suggest_categorical("scheduler", [
         "StepLR",
         "CosineAnnealingLR",
@@ -693,7 +703,6 @@ def objective(trial, train_dataloader, valid_dataloader, device, epochs=15):
     loss_fn = {"L1Loss": nn.L1Loss(), "MSELoss": nn.MSELoss(), "SmoothL1Loss": nn.SmoothL1Loss()}[loss_name]
     optimizer = {
         "AdamW": lambda: torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd),
-        # "Adam": lambda: torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd),
     }[optimizer_name]()
 
     # Conditionally define scheduler and its hyperparameters
@@ -835,7 +844,7 @@ def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, d
 
 def main():
     parser = argparse.ArgumentParser()
-    # TODO: add something like is-delivery (e.g. mode "delivery") to read from input.json()
+    # TODO: add something like is-delivery (e.g. mode "delivery")
     parser.add_argument("--mode", type=str, choices=["train", "infer-valid", "infer-test", "tune"], default="infer-test",
                         help="Whether to train a new model, run inference or perform hyperparameter tuning")
     parser.add_argument("--type", type=str, choices=["chessboard", "num-pieces"], default="num-pieces",
@@ -865,8 +874,8 @@ def main():
     valid_dataloader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False)
     test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False)
 
-    # experiment(train_dataloader)  # uncomment to visualise train dataloader (mostly for visualizing augmentations)
-    # exit(0)
+    experiment(train_dataloader)  # uncomment to visualise train dataloader (mostly for visualizing augmentations)
+    exit(0)
 
     if args.type == "chessboard":
         main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, device)

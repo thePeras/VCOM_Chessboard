@@ -173,3 +173,5 @@ if __name__ == "__main__":
 
     best_model = "results-best_model"
     process_results([best_model], "valid", labels=["Best Model"], show_single_plots=True, set_title=False)
+
+    process_results(comparisons_loss + [best_model], "valid", labels=labels + ["Best Model"], legend_label="Losses", set_title=False)
