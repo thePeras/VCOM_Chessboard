@@ -4,7 +4,12 @@ train: dataset_corners/splits/train.txt
 val: dataset_corners/splits/val.txt
 test: dataset_corners/splits/test.txt
 
-kpt_shape: [4, 2]
+kpt_shape: [4, 3] # (x, y, visibility)
+names:
+  0: chessboard
 
-nc: 1
-names: ["chessboard"]
+keypoint_names:
+  - top_left
+  - top_right
+  - bottom_right
+  - bottom_left
