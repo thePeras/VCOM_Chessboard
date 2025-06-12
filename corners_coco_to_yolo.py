@@ -103,6 +103,6 @@ for split in ['train', 'val', 'test']:
         for img_id in ids:
             fname = image_id_to_file.get(img_id)
             if fname:
-                f.write(f"/kaggle/input/chessboard-cv/dataset_cornes/images/{fname.split('images/')[1]}\n")
+                f.write(f"/kaggle/input/chessboard-cv/dataset_cornes_kp/images/{fname.split('images/')[1]}\n")
 
 print(f"Successfully generated split files in '{SPLITS_DIR}'")

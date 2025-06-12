@@ -1,8 +1,8 @@
 path: /kaggle/input/chessboard-cv
 
-train: dataset_corners/splits/train.txt
-val: dataset_corners/splits/val.txt
-test: dataset_corners/splits/test.txt
+train: dataset_corners_kp/splits/train.txt
+val: dataset_corners_kp/splits/val.txt
+test: dataset_corners_kp/splits/test.txt
 
 kpt_shape: [4, 3] # (x, y, visibility)
 names:
