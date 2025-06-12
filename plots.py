@@ -174,5 +174,5 @@ if __name__ == "__main__":
     best_model = effnet(6) + "_smoothl1loss"
     process_results([best_model], "valid", labels=["Best Model"], show_single_plots=True, set_title=False)
 
-    # model_result_dirs = ["results-numpieces_final_effnetv2s3"]
-    # process_results(model_result_dirs, "test")
+    model_result_dirs = ["results-numpieces_final_effnetv2s3"]
+    process_results(model_result_dirs, "test")

@@ -1,3 +1,19 @@
+"""
+Script for training and running computer vision models, mainly for task 2 (number of pieces in a chessboard).
+
+It also contains a few functions to train a model end-to-end to predict the chessboard (digital twin),
+but this resulted in bad performances. It was not used as the main part of the digital twin task.
+
+Required packages: matplotlib, numpy, torch, torchvision, scikit-learn, optuna
+
+
+To run, assuming that best_model.pth is in the same directory as the source code, just do:
+`python3 main.py`
+
+To check what arguments you can pass, run `python3 main.py --help`
+In addition, the images are assumed to be saved in their original sizes (about 3000x3000).
+"""
+
 import matplotlib.pyplot as plt, numpy as np, os, torch, random, cv2, json, argparse
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
@@ -665,17 +681,19 @@ def objective(trial, train_dataloader, valid_dataloader, device, epochs=15):
     lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
     wd = trial.suggest_float("wd", 1e-4, 1e-1, log=True)
     loss_name = trial.suggest_categorical("loss", ["L1Loss", "MSELoss", "SmoothL1Loss"])
-    optimizer_name = trial.suggest_categorical("optimizer", ["AdamW", "Adam"])
-    scheduler_name = trial.suggest_categorical("scheduler", ["StepLR", "CosineAnnealingLR", "ReduceLROnPlateau"])
+    # optimizer_name = trial.suggest_categorical("optimizer", ["AdamW", "Adam"])
+    optimizer_name = "AdamW"
+    scheduler_name = trial.suggest_categorical("scheduler", [
+        "StepLR",
+        "CosineAnnealingLR",
+    ])
 
-    # Initialize model
+    # Initialize model, loss function and optimizer
     model = NumPiecesPredictor.create_efficient_net().to(device)
-
-    # Setup loss and optimizer
     loss_fn = {"L1Loss": nn.L1Loss(), "MSELoss": nn.MSELoss(), "SmoothL1Loss": nn.SmoothL1Loss()}[loss_name]
     optimizer = {
         "AdamW": lambda: torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd),
-        "Adam": lambda: torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
+        # "Adam": lambda: torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd),
     }[optimizer_name]()
 
     # Conditionally define scheduler and its hyperparameters
@@ -684,14 +702,8 @@ def objective(trial, train_dataloader, valid_dataloader, device, epochs=15):
         gamma = trial.suggest_float("gamma", 0.1, 0.8)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
     elif scheduler_name == "CosineAnnealingLR":
-        # T_max is often set to the number of epochs
-        t_max = trial.suggest_int("t_max", 10, epochs)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max)
-    elif scheduler_name == "ReduceLROnPlateau":
-        # This scheduler reduces LR based on a monitored metric
-        patience = trial.suggest_int("patience", 2, 5)
-        factor = trial.suggest_float("factor", 0.1, 0.5)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=factor, patience=patience)
+        # T_max is the total number of epochs. No tuning needed here.
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     # Training loop
     best_val_mae = float('inf')
@@ -704,19 +716,15 @@ def objective(trial, train_dataloader, valid_dataloader, device, epochs=15):
         _, val_mae, _, __ = epoch_iter_num_pieces(model, valid_dataloader, loss_fn, is_training=False, device=device)
 
         # Step the scheduler
-        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            scheduler.step(val_mae) # This scheduler needs the metric
-        else:
-            scheduler.step()
+        scheduler.step()
 
         if val_mae < best_val_mae:
             best_val_mae = val_mae
-        
-        # Report intermediate results to the pruner
+
+        # Report intermediate results: for the pruner
         trial.report(val_mae, epoch)
 
-        # Handle pruning
-        if trial.should_prune():
+        if trial.should_prune():    # Handle pruning
             raise optuna.exceptions.TrialPruned()
 
     return best_val_mae
@@ -730,7 +738,11 @@ def hyperparameter_tuning_optuna(args, train_dataloader, valid_dataloader, devic
     epochs_per_trial = 15   # The number of epochs to train for each trial
     n_trials = 50   # The number of different hyperparameter combinations to test
 
-    pruner = optuna.pruners.MedianPruner()
+    # this pruner was too aggressive (pruning too much)
+    # pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=5)
+
+    # only discard if a step is in the worst 25% (less aggressive pruner)
+    pruner = optuna.pruners.PercentilePruner(percentile=75.0, n_startup_trials=5, n_warmup_steps=5)
     study = optuna.create_study(direction="minimize", pruner=pruner)
 
     study.optimize(
@@ -752,7 +764,7 @@ def hyperparameter_tuning_optuna(args, train_dataloader, valid_dataloader, devic
         print(f"    {key}: {value}")
 
     df = study.trials_dataframe()
-    save_filename = "optuna_tuning_results.csv"
+    save_filename = "optuna_tuning_results_run4.csv"
     df.to_csv(save_filename)
     print(f"\nFull tuning results saved to '{save_filename}'")
 
@@ -761,20 +773,17 @@ def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, d
     model_save_path = os.path.join(save_dir, args.model_name + ".pth")
 
     model = NumPiecesPredictor.create_efficient_net().to(device)
-
-    # try
-    # learning rates
-    # weight decays
-    # CosineAnnealingWarmRestarts(opt, T_0=10, T_mult=2), OneCycleLR(opt, max_lr=lr, epochs=30, steps_per_epoch=len(train_loader)
-
-    # loss_fn = nn.MSELoss()
-    # loss_fn = nn.SmoothL1Loss()
     loss_fn = nn.L1Loss()
     if args.mode == "train":
         os.makedirs(save_dir, exist_ok=False)
+        epochs = 30
 
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
+        # optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+        # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
+
+        # Best performing model (from hyperparameter tuning)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.0005255282016307133, weight_decay=0.03255916377235661)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
         model = train_model_num_pieces(
             model,
@@ -784,7 +793,7 @@ def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, d
             loss_fn,
             scheduler,
             device,
-            epochs=30,
+            epochs=epochs,
             save_dir=save_dir,
         )
         torch.save(model.state_dict(), model_save_path)
@@ -828,11 +837,13 @@ def main():
     parser = argparse.ArgumentParser()
     # TODO: add something like is-delivery (e.g. mode "delivery") to read from input.json()
     parser.add_argument("--mode", type=str, choices=["train", "infer-valid", "infer-test", "tune"], default="infer-test",
-                        help="Whether to train a new model or run inference")
+                        help="Whether to train a new model, run inference or perform hyperparameter tuning")
     parser.add_argument("--type", type=str, choices=["chessboard", "num-pieces"], default="num-pieces",
                         help="The type of the model to use/train")
     parser.add_argument("--model-name", type=str, default="best_model",
-                        help="Name of the save model weights for inference (e.g. num_pieces1)")
+                        help="Name of the save model weights for inference (e.g. best_model)")
+    parser.add_argument("--batch-size", type=int, default=16,
+                        help="The batch size for training or inference")
     args = parser.parse_args()
 
     root_dir = "complete_dataset"
@@ -846,7 +857,8 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using {device} device")
 
-    batch_size = 16     # as large as possible (depends on image resizes used)
+    # defaut: 16
+    batch_size = args.batch_size    # as large as possible (depends on image resizes used)
     num_workers = 12
 
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True)
