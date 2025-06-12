@@ -179,6 +179,7 @@ output_images/
 annotated_images/
 complete_dataset/*
 !complete_dataset/annotations.json
+dataset/
 
 input.json
 output.json
