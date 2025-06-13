@@ -46,13 +46,12 @@ plt.grid(True, linestyle='--', alpha=0.7)
 plt.show()
 
 # 2. Relationship between learning rate and objective values
-style = "params_optimizer" if "params_optimizer" in df.columns else None
 plt.figure(figsize=(10, 6))
-sns.scatterplot(data=complete_trials, x='params_lr', y='value', hue='params_loss', style=style, s=100, alpha=0.7)
+sns.scatterplot(data=complete_trials, x='params_lr', y='value', hue='params_loss', s=100, alpha=0.7)
 plt.xscale('log') # Learning rates are often log-distributed
-plt.title('Objective Value vs. Learning Rate (by Loss and Optimizer)')
+# plt.title('Objective Value vs. Learning Rate (by Loss)')
 plt.xlabel('Learning Rate (log scale)')
-plt.ylabel('Objective Value')
+plt.ylabel('MAE')
 plt.grid(True, linestyle='--', alpha=0.7)
 plt.legend(title='Parameters')
 plt.tight_layout()
@@ -77,34 +76,4 @@ if "params_optimizer" in df.columns:
     plt.grid(True, linestyle='--', alpha=0.7)
     plt.show()
 
-# 5. Parallel Coordinates Plot for numerical parameters
-try:
-    print("\nGenerating Parallel Coordinates Plot...")
-    # Select only numerical parameters and the objective value for plotting
-    numerical_params_cols = [col for col in params_cols if complete_trials[col].dtype in ['float64', 'int64']]
-    plot_data_numeric = complete_trials[numerical_params_cols + ['value']].copy()
-
-    # Drop rows with NaN values in the selected columns, as parallel_coordinates can't handle them
-    plot_data_numeric.dropna(inplace=True)
-
-    # Clean up column names for plot
-    plot_data_numeric.columns = [col.replace('params_', '') for col in plot_data_numeric.columns]
-
-    if not plot_data_numeric.empty:
-        plt.figure(figsize=(12, 8))
-        pd.plotting.parallel_coordinates(plot_data_numeric, 'value', colormap=plt.cm.viridis)
-        plt.title('Parallel Coordinates Plot of Numerical Hyperparameters and Objective Value')
-        plt.xticks(rotation=45, ha='right')
-        plt.ylabel('Value (Normalized)')
-        plt.tight_layout()
-        plt.show()
-    else:
-        print("No complete trials with purely numerical parameters for parallel coordinates plot after dropping NaNs.")
-
-except Exception as e: # Catch a broader exception to gracefully handle other issues
-    print(f"\nError generating Parallel Coordinates Plot: {e}")
-    print("This plot requires all selected columns to be numerical. Categorical parameters like 'loss' and 'optimizer' cannot be plotted directly.")
-    print("Please ensure your parameters are numerical or consider alternative visualizations for categorical parameters.")
-
-
-print("\nAnalysis complete. Examine the plots to gain insights into your hyperparameter tuning!")
+print("Plots generation complete!")
