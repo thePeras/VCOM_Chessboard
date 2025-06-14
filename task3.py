@@ -675,7 +675,7 @@ def rotate_matrix(rotation, board_matrix):
 
 #model_path = "models/myYolov8n/weights/best.pt"
 model_path = "models/myYolo11s/weights/best.pt"
-image_directory = "complete_dataset/images/"
+image_directory = "dataset/images/"
 mismatches_path = "mismatches/task3/mismatch_log.csv"
 
 def process_single_image(filename):
@@ -790,8 +790,8 @@ def process_mismatches():
 
 
 #print(process_single_image("complete_dataset/images/56/G056_IMG023.jpg"))
-#process_all_images()
-process_mismatches()
+process_all_images()
+#process_mismatches()
 
 """
 board = chess.Board(fen_string)
