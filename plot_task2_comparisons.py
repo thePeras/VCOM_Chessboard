@@ -1,3 +1,7 @@
+"""
+This script was used to generate the plots for comparing models from Task 2 (the plots in the report).
+To evaluate the task 2 results, use another script.
+"""
 import pickle, os
 
 import torch
@@ -11,6 +15,7 @@ def load_results(filename):
         data = pickle.load(f)
     return data["preds"], data["true"]
 
+## Main function to generate plots of model comparisons
 def process_results(
     result_dirs: list[str],
     results_type: str,
@@ -22,8 +27,18 @@ def process_results(
 ):
     """
     Args:
-        result_dirs (list[str]): The model's result directories to process
-        results_type (str): The results type: validation or test
+        result_dirs: A list of the model's result directories to process.
+        results_type: The type of results to load: 'valid' or 'test'.
+        labels: A list of display names for each model,
+            corresponding to the `result_dirs`. If `None`, the directory names are
+            used as labels.
+        legend_label: The title for the legend in the final
+            comparison plot. If `None`, the legend will not have a title.
+        show_single_plots: If `True`, displays individual plots for
+            each model (confusion matrix, error histogram, and true vs. predicted
+            scatter plot).
+        set_title: If `True`, sets the titles for the generated
+            plots.
     """
     if labels is None:
         labels = result_dirs
@@ -77,7 +92,7 @@ def process_results(
         print(f">> Result {model_label}")
         print(f'MAE: {mae:.2f}')
         print(f'RMSE: {rmse:.2f}')
-        print(f'Accuracy within ±1: {acc_within_1:.2%}')
+        print(f'Accuracy within +/- 1: {acc_within_1:.2%}')
         print(f"Accuracy with rounded values: {acc_with_rounded:.2%}")
 
         all_metrics.append({
@@ -125,6 +140,7 @@ def process_results(
         plt.tight_layout()
         plt.show()
 
+## Notes to remember what model names correspond to what setup
 """
 Efficient Net models
 1 - manual augmentations
@@ -137,50 +153,71 @@ Efficient Net models
 8 - AutoAugment, sigmoid
 """
 
-if __name__ == "__main__":
+def main():
     effnet = lambda num: f"results-numpieces_final_effnetv2s{num}"
     resnet = lambda num: f"results-numpieces_final{num}"
+
+    # Compare basic manual augmentations (with resnet)
     model_result_dirs = [resnet(i) for i in range(1, 7)]
     process_results(model_result_dirs, "valid", set_title=False)
-    # model_result_dirs = [resnet(i) for i in range(1, 6)] + \
-    #     [f"results-numpieces3"] + \
-    #     [f"results-numpieces_final_resnext1", f"results-numpieces_final_swinv2s1"] + \
-    #     [effnet(i) for i in range(1, 6)] + \
-    #     ["results-numpieces_final_effnetv2s6_smoothl1loss"] + \
-    #     ["results-numpieces_final_effnetv2s7"] + \
-    #     ["results-best_model"]
-    # process_results(model_result_dirs, "valid", set_title=False)
 
-    # comparisons_architectures = [
-    #     "results-numpieces_final2",
-    #     "results-numpieces_final_resnext1",
-    #     "results-numpieces_final_effnetv2s1",
-    #     "results-numpieces_final_swinv2s1",
-    # ]
-    # labels = ["ResNet50", "ResNeXt", "EffNetV2-S", "SwinV2-S"]
-    # process_results(comparisons_architectures, "valid", labels=labels, legend_label="Models", set_title=False)
+    # Compare everything at once
+    model_result_dirs = [resnet(i) for i in range(1, 6)] + \
+        [f"results-numpieces3"] + \
+        [f"results-numpieces_final_resnext1", f"results-numpieces_final_swinv2s1"] + \
+        [effnet(i) for i in range(1, 6)] + \
+        ["results-numpieces_final_effnetv2s6_smoothl1loss"] + \
+        ["results-numpieces_final_effnetv2s7"] + \
+        ["results-best_model"]
+    process_results(model_result_dirs, "valid", set_title=False)
 
-    # comparisons_augmentations = [effnet(1), effnet(2), effnet(8)]
-    # labels = ["Manual", "Random", "Auto"]
-    # process_results(comparisons_augmentations, "valid", labels=labels, legend_label="Augmentations", set_title=False)
+    # Compare different model architectures (same setup)
+    comparisons_architectures = [
+        "results-numpieces_final2",
+        "results-numpieces_final_resnext1",
+        "results-numpieces_final_effnetv2s1",
+        "results-numpieces_final_swinv2s1",
+    ]
+    labels = ["ResNet50", "ResNeXt", "EffNetV2-S", "SwinV2-S"]
+    process_results(comparisons_architectures, "valid", labels=labels, legend_label="Models", set_title=False)
 
-    # comparisons_activations = [effnet(2), effnet(4), effnet(3)]
-    # labels = ["Sigmoid ($30 \\cdot \\sigma + 2$)", "ReLU", "ReLU ($scaling \\cdot ReLU + bias$)"]
-    # process_results(comparisons_activations, "valid", labels=labels, legend_label="Activations", set_title=False)
+    # Compare different augmentations
+    comparisons_augmentations = [effnet(1), effnet(2), effnet(8)]
+    labels = ["Manual", "Random", "Auto"]
+    process_results(comparisons_augmentations, "valid", labels=labels, legend_label="Augmentations", set_title=False)
 
+    # Compare different activation functions
+    comparisons_activations = [effnet(2), effnet(4), effnet(3)]
+    labels = ["Sigmoid ($30 \\cdot \\sigma + 2$)", "ReLU", "ReLU ($scaling \\cdot ReLU + bias$)"]
+    process_results(comparisons_activations, "valid", labels=labels, legend_label="Activations", set_title=False)
+
+    # Compare different loss functions
     comparisons_loss = [effnet(3), effnet(6) + "_smoothl1loss", effnet(7)]
     labels = ["MSE", "SmoothL1Loss", "L1Loss"]
-    # process_results(comparisons_loss, "valid", labels=labels, legend_label="Losses", set_title=False)
+    process_results(comparisons_loss, "valid", labels=labels, legend_label="Losses", set_title=False)
 
     best_model = "results-best_model"
+
+    # Compare best models
+    process_results(
+        [effnet(6) + "_smoothl1loss", best_model, "results-yolov8x_num_pieces"],
+        "valid",
+        labels=["Previous Best", "Best Model (Tuned)", "Best YOLO Model"],
+        legend_label="Models",
+        set_title=False,
+    )
+
+    # Best model results
     process_results([best_model], "test", labels=["Best Model"], show_single_plots=True, set_title=False)
 
-    process_results(comparisons_loss + [best_model], "valid", labels=labels + ["Best Model"], legend_label="Losses", set_title=False)
-
-    # process_results(
-    #     [effnet(6) + "_smoothl1loss", "results-best_model"],
-    #     "valid",
-    #     labels=["Previous Best", "Best Model (Tuned)"],
-    #     legend_label="Models",
-    #     set_title=False,
-    # )
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print("\n\n")
+        print("Got an exception!")
+        print(">> This script is used to compare models, so it should not be run on the delivery")
+        print("This script was used for generating")
+        print("Instead, run another script to evaluate the model for task 2")
+        print("\n\n")
+        raise e
