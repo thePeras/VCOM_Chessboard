@@ -1,17 +1,20 @@
 """
 Script for training and running computer vision models, mainly for task 2 (number of pieces in a chessboard).
+It contains functions to train models for:
+- Number of Pieces
+- Digital twin (end-to-end): didn't work very well
+- Corners Prediction
 
-It also contains a few functions to train a model end-to-end to predict the chessboard (digital twin),
-but this resulted in bad performances. It was not used as the main part of the digital twin task.
+Even though it contains a few functions to train a model end-to-end to predict the chessboard (digital twin),
+it resulted in bad performances. It was not used as the main part of the digital twin task.
 
-Required packages: matplotlib, numpy, torch, torchvision, scikit-learn, optuna
+Required packages: matplotlib, numpy, opencv-python, torch, torchvision, scikit-learn, optuna
 
-
-To run, assuming that best_model.pth is in the same directory as the source code, just do:
-`python3 main.py`
+To run for task 2, assuming that best_model.pth is in the same directory as the source code, just do:
+`python3 <filename>.py` (for instance `python3 main.py`)
 
 To check what arguments you can pass, run `python3 main.py --help`
-In addition, the images are assumed to be saved in their original sizes (about 3000x3000).
+In addition, the images are assumed to be loaded in their original sizes (about 3000x3000).
 """
 
 import matplotlib.pyplot as plt, numpy as np, os, torch, random, cv2, json, argparse
@@ -31,6 +34,8 @@ import pickle
 from copy import deepcopy
 
 random.seed(42)
+
+## ========================================= Augmentation setups =========================================================
 
 # manual augmentations (not as great performance as RandAugment): only used initially for num-pieces
 manual_data_aug = transforms.Compose([
@@ -110,6 +115,11 @@ data_in = transforms.Compose([
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 ])
 
+## ============================== Helpers for handling the chessboard ================================
+## Used to:
+## - Produce labels (such as the board label)
+## - Produce the digital twin board
+
 def chesspos2number(chesspos):
     col = ord(chesspos[0])-ord('a')
     row = 8 - int(chesspos[1])  # can be confusing to visualize (since a1 corresponds to row 0, col 0)
@@ -158,12 +168,15 @@ def board_to_chars(board):
             board_chars[ri][ci] = chess_piece_id_to_char(id)
     return board_chars
 
+## =================================== Helper to load images =========================================
 
 def load_image(image_file: str):
-    # About 750x750 (3000 / 4)
+    # Load with about 750x750 (3000 / 4)
     image = cv2.imread(image_file, cv2.IMREAD_REDUCED_COLOR_4)
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     return image
+
+## =================================== Dataset classes =========================================
 
 class ChessCornersDataset(Dataset):
     # A different dataset class because augmentations for corners require special care here
@@ -317,6 +330,10 @@ class DeliveryChessDataset(Dataset):
         image = data_in(image)
         return self.file_names[i], image
 
+## =================================== Helpers to calculate metrics and get targets =========================================
+## Helps in abstracting training and testing process
+## Allows using one version of epoch_iter for multiple tasks
+
 def get_chessboard_predictor_targets(batch):
     return batch[2].long()
 
@@ -350,6 +367,11 @@ def calculate_corners_metric(all_preds, all_labels):
     mean_distance_per_corner = torch.mean(distances)
     return mean_distance_per_corner.item()
 
+## =================================== Model classes =========================================
+## A model type for each task handled in this script
+## - Digital twin (with end-to-end learning): this didn't work well
+## - Corners prediction
+## - Number of Pieces
 class ChessboardPredictor(nn.Module):
     def __init__(self, backbone, in_channels):
         super().__init__()
@@ -438,6 +460,9 @@ class NumPiecesPredictor(nn.Module):
     def forward(self, x):
         return self._learnable_forward_relu(x)
 
+## =================================== Functions to abstract one epoch iteration =========================================
+## Can be used for training and for testing
+
 def epoch_iter(
     model,
     dataloader,
@@ -520,6 +545,8 @@ def epoch_iter_corners(model, dataloader, loss_fn, optimizer=None, is_training=T
         device=device,
     )
 
+## =================================== Plots based on the training history =========================================
+
 def plot_train_history(train_values, val_values, ylabel: str, filename: str, title: Optional[str] = None):
     """
     Plots training and validation values (e.g., loss or accuracy) over epochs.
@@ -539,6 +566,8 @@ def plot_train_history(train_values, val_values, ylabel: str, filename: str, tit
     
     plt.grid(True)
     plt.savefig(filename)
+
+## =================================== Functions to train models for different tasks =========================================
 
 def train_model_chessboard(
     model,
@@ -717,6 +746,8 @@ def train_model_corners(
 
     return model
 
+## =================================== Visualise dataloaders =========================================
+
 def experiment(dataloader):
     """
     Function to experiment and see the image results of a specific dataloader.
@@ -764,6 +795,9 @@ def experiment(dataloader):
 
         plt.show()
         break
+
+
+## =================================== Helpers for visualising sample model results =========================================
 
 def denormalise(img_tensor):
     """Undo ImageNet normalisation and return uint8 RGB numpy array."""
@@ -866,8 +900,8 @@ def visualise_corners_sample(img_tensor, pred, true, out_file, alpha=0.6):
     final_bgr = cv2.cvtColor(photo_bgra, cv2.COLOR_BGRA2BGR)
     cv2.imwrite(out_file, final_bgr)
 
-
 def visualise_preds(model, dataloader, device, viz_sample_fn, viz_dir, get_targets_fn, get_preds_fn, max_viz_cnt=50):
+    """Main function to visualise sample model results"""
     os.makedirs(viz_dir, exist_ok=True)
     img_count = 0
     with torch.no_grad():
@@ -892,65 +926,17 @@ def visualise_preds(model, dataloader, device, viz_sample_fn, viz_dir, get_targe
 
     print(f"Inference complete, visualisations available at {viz_dir}")
 
+
+## =================================== Helpers for saving model results =========================================
+
 def get_model_results_save_dir(base_model_path: str):
     return f"results-{base_model_path}"
-
 
 def save_model_results(filename: str, preds, true):
     with open(f"{filename}.pkl", "wb") as f:
         pickle.dump({"preds": preds, "true": true}, f)
 
-
-def main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, device):
-    save_dir = get_model_results_save_dir(args.model_name)
-    model_save_path = os.path.join(save_dir, args.model_name + ".pth")
-
-    backbone = nn.Sequential(*list(
-            models.resnet50(weights=models.ResNet50_Weights.DEFAULT).children())[:-2])  # → (B, 2048, 7, 7)
-    model = ChessboardPredictor(backbone, in_channels=2048).to(device)
-
-    if args.mode == "train":
-        os.makedirs(save_dir, exist_ok=False)
-
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
-
-        model = train_model_chessboard(
-            model,
-            train_dataloader,
-            valid_dataloader,
-            optimizer,
-            scheduler,
-            device,
-            epochs=20,
-            save_dir=save_dir,
-        )
-        torch.save(model.state_dict(), model_save_path)
-        print(f"Model saved to {model_save_path}")
-
-    elif args.mode == "infer-test":
-        print(f"Loading model from {model_save_path}")
-        model.load_state_dict(torch.load(model_save_path, map_location=device))
-        model.eval()
-
-        loss_fn = nn.CrossEntropyLoss()
-        test_loss, test_acc, all_preds, all_labels = epoch_iter_chessboard(
-            model,
-            test_dataloader,
-            loss_fn=loss_fn,
-            is_training=False,
-            device=device
-        )
-        print(f"Test Loss: {test_loss:.4f}, Acc: {test_acc:.4f}")
-        visualise_preds(
-            model,
-            test_dataloader,
-            device,
-            viz_sample_fn=visualise_chessboard_sample,
-            viz_dir="digital_twin_visualisations",
-            get_targets_fn=get_chessboard_predictor_targets,
-            get_preds_fn=get_preds_chessboard,
-        )
+## =================================== Functions for hyperparameter tuning: Number of Pieces =======================================
 
 def objective(trial, train_dataloader, valid_dataloader, device, epochs=15):
     """
@@ -1046,6 +1032,64 @@ def hyperparameter_tuning_optuna(args, train_dataloader, valid_dataloader, devic
     df.to_csv(save_filename)
     print(f"\nFull tuning results saved to '{save_filename}'")
 
+## =================================== Main functions for each task =========================================
+## Includes:
+## - Digital twin (with end-to-end): this was not very successful so we didn't invest in this as much
+## - Number of Pieces
+## - Corner Detection
+
+def main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, device):
+    save_dir = get_model_results_save_dir(args.model_name)
+    model_save_path = os.path.join(save_dir, args.model_name + ".pth")
+
+    backbone = nn.Sequential(*list(
+            models.resnet50(weights=models.ResNet50_Weights.DEFAULT).children())[:-2])  # → (B, 2048, 7, 7)
+    model = ChessboardPredictor(backbone, in_channels=2048).to(device)
+
+    if args.mode == "train":
+        os.makedirs(save_dir, exist_ok=False)
+
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
+
+        model = train_model_chessboard(
+            model,
+            train_dataloader,
+            valid_dataloader,
+            optimizer,
+            scheduler,
+            device,
+            epochs=20,
+            save_dir=save_dir,
+        )
+        torch.save(model.state_dict(), model_save_path)
+        print(f"Model saved to {model_save_path}")
+
+    elif args.mode == "infer-test":
+        print(f"Loading model from {model_save_path}")
+        model.load_state_dict(torch.load(model_save_path, map_location=device))
+        model.eval()
+
+        loss_fn = nn.CrossEntropyLoss()
+        test_loss, test_acc, all_preds, all_labels = epoch_iter_chessboard(
+            model,
+            test_dataloader,
+            loss_fn=loss_fn,
+            is_training=False,
+            device=device
+        )
+        print(f"Test Loss: {test_loss:.4f}, Acc: {test_acc:.4f}")
+        visualise_preds(
+            model,
+            test_dataloader,
+            device,
+            viz_sample_fn=visualise_chessboard_sample,
+            viz_dir="digital_twin_visualisations",
+            get_targets_fn=get_chessboard_predictor_targets,
+            get_preds_fn=get_preds_chessboard,
+        )
+
+
 def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, device):
     save_dir = get_model_results_save_dir(args.model_name)
     model_save_path = os.path.join(save_dir, args.model_name + ".pth")
@@ -1111,6 +1155,7 @@ def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, d
             get_preds_fn=None,
         )
 
+
 def main_corners(args, train_dataloader, valid_dataloader, test_dataloader, device):
     save_dir = get_model_results_save_dir(args.model_name)
     model_save_path = os.path.join(save_dir, args.model_name + ".pth")
@@ -1175,6 +1220,9 @@ def main_corners(args, train_dataloader, valid_dataloader, test_dataloader, devi
             get_preds_fn=None,
         )
 
+
+## ======================================= Function used for delivery ============================================
+## Reads from input.json and outputs to output.json
 def handle_delivery_jsons(args, device):
     model_save_path = args.model_name + ".pth"
 
@@ -1216,6 +1264,8 @@ def handle_delivery_jsons(args, device):
 
     print("\n>> Completed running the model for images given in input.json and output the results to output.json")
 
+## ======================================= Main function ==================================================
+## Handles selecting what models and tasks to run
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--delivery", type=bool, default=True,
@@ -1225,7 +1275,7 @@ def main():
     parser.add_argument("--type", type=str, choices=["chessboard", "num-pieces", "corners"], default="num-pieces",
                         help="The type of the model to use/train")
     parser.add_argument("--model-name", type=str, default="best_model",
-                        help="Name of the save model weights for inference (e.g. best_model)")
+                        help="Name of the save model weights for inference (e.g. best_model). Do not include '.pth', since we manually add it")
     parser.add_argument("--batch-size", type=int, default=16,
                         help="The batch size for training or inference")
     parser.add_argument("--num-workers", type=int, default=8,
