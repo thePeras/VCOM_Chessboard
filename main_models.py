@@ -158,11 +158,12 @@ def board_to_chars(board):
             board_chars[ri][ci] = chess_piece_id_to_char(id)
     return board_chars
 
-# TODO
-# class ChessDataset(Dataset):
-#     pass
-# class ChessCornersDataset(Dataset):
-#     pass
+
+def load_image(image_file: str):
+    # About 750x750 (3000 / 4)
+    image = cv2.imread(image_file, cv2.IMREAD_REDUCED_COLOR_4)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    return image
 
 class ChessCornersDataset(Dataset):
     # A different dataset class because augmentations for corners require special care here
@@ -218,9 +219,7 @@ class ChessCornersDataset(Dataset):
         return len(self.file_names)
 
     def __getitem__(self, i):
-        # about 750x750 (3000 / 4)
-        image = cv2.imread(os.path.join(self.images_dir, self.file_names[i]), cv2.IMREAD_REDUCED_COLOR_4)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = load_image(os.path.join(self.images_dir, self.file_names[i]))
 
         original_width = self.original_widths[i]
         original_height = self.original_heights[i]
@@ -294,9 +293,7 @@ class ChessDataset(Dataset):
         return len(self.file_names)
 
     def __getitem__(self, i):
-        # about 750x750 (3000 / 4)
-        image = cv2.imread(os.path.join(self.images_dir, self.file_names[i]), cv2.IMREAD_REDUCED_COLOR_4)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = load_image(os.path.join(self.images_dir, self.file_names[i]))
 
         image = self.transform(image)
 
@@ -306,6 +303,19 @@ class ChessDataset(Dataset):
 
         return image, num_pieces.float(), board, occupancy_board
 
+class DeliveryChessDataset(Dataset):
+    # Includes no labels
+    # Used just for batch processing of delivery images
+    def __init__(self, image_files):
+        self.file_names = image_files
+
+    def __len__(self):
+        return len(self.file_names)
+
+    def __getitem__(self, i):
+        image = load_image(self.file_names[i])
+        image = data_in(image)
+        return self.file_names[i], image
 
 def get_chessboard_predictor_targets(batch):
     return batch[2].long()
@@ -1165,10 +1175,46 @@ def main_corners(args, train_dataloader, valid_dataloader, test_dataloader, devi
             get_preds_fn=None,
         )
 
-def handle_delivery_jsons(args):
-    # load model from args.model_name
-    pass
+def handle_delivery_jsons(args, device):
+    model_save_path = args.model_name + ".pth"
 
+    model = NumPiecesPredictor.create_efficient_net().to(device)
+
+    print(f"Loading model from {model_save_path}")
+    model.load_state_dict(torch.load(model_save_path, map_location=device))
+    model.eval()
+
+    with open("input.json", "r") as f:
+        data = json.load(f)
+
+    print("\n>> Processing images in batches (using a dataloader)")
+    delivery_dataset = DeliveryChessDataset(data["image_files"])
+    delivery_dataloader = DataLoader(
+        delivery_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        drop_last=False,
+    )
+    output = []
+    with torch.no_grad():
+        for i, (filenames, images) in enumerate(delivery_dataloader):
+            print(f"Processing batch {i+1}/{len(delivery_dataloader)} of images")
+            images = images.to(device)
+            preds = model(images)
+            preds = preds.detach().cpu().numpy()
+            for filename, pred in zip(filenames, preds):
+                print(f"Processed {filename}")
+                output.append({
+                    "image": filename,
+                    "num_pieces": float(pred),
+                })
+
+    with open("output.json", "w") as f:
+        json.dump(output, f, indent=4)
+
+    print("\n>> Completed running the model for images given in input.json and output the results to output.json")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -1182,10 +1228,16 @@ def main():
                         help="Name of the save model weights for inference (e.g. best_model)")
     parser.add_argument("--batch-size", type=int, default=16,
                         help="The batch size for training or inference")
+    parser.add_argument("--num-workers", type=int, default=8,
+                        help="How many subprocesses to use for the data loading process")
     args = parser.parse_args()
 
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using {device} device")
+
     if args.delivery:
-        handle_delivery_jsons(args)
+        handle_delivery_jsons(args, device)
+        return
 
     root_dir = "complete_dataset"
     images_dir = os.path.join(root_dir, "chessred2k" if use_2k_dataset else "chessred")
@@ -1201,12 +1253,10 @@ def main():
         valid_dataset = ChessDataset(root_dir, images_dir, 'valid', data_in)
         test_dataset = ChessDataset(root_dir, images_dir, 'test', data_in)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using {device} device")
-
     # defaut: 16
     batch_size = args.batch_size    # as large as possible (depends on image resizes used)
-    num_workers = 12
+    # default: 8
+    num_workers = args.num_workers
 
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True)
     valid_dataloader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False)
@@ -1214,7 +1264,7 @@ def main():
 
     if args.mode == "visualise":
         experiment(train_dataloader)  # Visualise train dataloader (for visualising augmentations)
-        exit(0)
+        return
 
     if args.type == "chessboard":
         main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, device)
@@ -1225,5 +1275,6 @@ def main():
             main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, device)
     elif args.type == "corners":
         main_corners(args, train_dataloader, valid_dataloader, test_dataloader, device)
+
 if __name__ == "__main__":
     main()
