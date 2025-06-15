@@ -17,21 +17,29 @@ To check what arguments you can pass, run `python3 main.py --help`
 In addition, the images are assumed to be loaded in their original sizes (about 3000x3000).
 """
 
-import matplotlib.pyplot as plt, numpy as np, os, torch, random, cv2, json, argparse
+import matplotlib.pyplot as plt, numpy as np, os, torch, random, cv2, json, argparse, pickle
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision import models
 from torchvision.transforms import v2 as transforms
 from torchvision import tv_tensors
-from torchsummary import summary
-from board_draw import render_board_from_matrix
-from sklearn.metrics import r2_score, mean_absolute_error
+from sklearn.metrics import mean_absolute_error
 from matplotlib.widgets import Button
 import optuna
 
 from typing import Optional
-import pickle
 from copy import deepcopy
+
+try:
+    # Other script requires more libraries (unnecessary for Task 2)
+    # Instead of placing the code in this script and requiring these installs
+    # We place it in a non-obligatory file
+    from draw_board import render_board_from_matrix
+except ImportError as e:
+    print(f"Could not import `draw_board.py`")
+    print("Don't worry! It's not required to run Task 2, since it's only used for rendering the board image (digital twin)")
+    print("\n")
+
 
 random.seed(42)
 
@@ -1226,12 +1234,14 @@ def main_corners(args, train_dataloader, valid_dataloader, test_dataloader, devi
 def handle_delivery_jsons(args, device):
     model_save_path = args.model_name + ".pth"
 
+    print("Creating base model")
     model = NumPiecesPredictor.create_efficient_net().to(device)
 
-    print(f"Loading model from {model_save_path}")
+    print(f"Loading model weights from {model_save_path}")
     model.load_state_dict(torch.load(model_save_path, map_location=device))
     model.eval()
 
+    print("Reading from input.json")
     with open("input.json", "r") as f:
         data = json.load(f)
 
@@ -1262,7 +1272,7 @@ def handle_delivery_jsons(args, device):
     with open("output.json", "w") as f:
         json.dump(output, f, indent=4)
 
-    print("\n>> Completed running the model for images given in input.json and output the results to output.json")
+    print("\n>> Completed running the model for images given in input.json and output the corresponding results to output.json")
 
 ## ======================================= Main function ==================================================
 ## Handles selecting what models and tasks to run
