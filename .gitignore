@@ -186,3 +186,4 @@ debug/
 .vscode
 *visualisations*/
 results*
+*Yolov8x*

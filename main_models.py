@@ -17,10 +17,9 @@ In addition, the images are assumed to be saved in their original sizes (about 3
 import matplotlib.pyplot as plt, numpy as np, os, torch, random, cv2, json, argparse
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
-import torch.nn.functional as F
 from torchvision import models
 from torchvision.transforms import v2 as transforms
-from sklearn.metrics import accuracy_score, f1_score
+from torchvision import tv_tensors
 from torchsummary import summary
 from board_draw import render_board_from_matrix
 from sklearn.metrics import r2_score, mean_absolute_error
@@ -33,7 +32,7 @@ from copy import deepcopy
 
 random.seed(42)
 
-# manual augmentations (not as great performance as RandAugment): not used anymore
+# manual augmentations (not as great performance as RandAugment): only used initially for num-pieces
 manual_data_aug = transforms.Compose([
     transforms.ToImage(),
     # full-range rotation (keep entire image, fill border with mean colour)
@@ -41,6 +40,31 @@ manual_data_aug = transforms.Compose([
         degrees=(-180, 180),
         expand=True,                         # keep corners
         fill=(123, 117, 104),                # roughly ImageNet mean in 0-255
+        interpolation=transforms.InterpolationMode.BILINEAR
+    ),
+    transforms.RandomPerspective(distortion_scale=0.15, p=0.5),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1, hue=0.04),
+    transforms.RandomApply(
+        [transforms.GaussianBlur(3, sigma=(0.1, 1.5))],
+        p=0.3,
+    ),
+
+    transforms.Resize((384, 384)),  # modify according to the used model (depends on the used pretraining settings)
+    transforms.CenterCrop((384, 384)),
+
+    transforms.ToDtype(torch.float32, scale=True),
+    transforms.Normalize([0.485, 0.456, 0.406],
+                         [0.229, 0.224, 0.225]),
+])
+
+# used for corners only (can't use RandAugment because transforming labels does not support it)
+corners_manual_data_aug = transforms.Compose([
+    # full-range rotation (keep entire image, fill border with mean colour)
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.RandomRotation(
+        degrees=(-180, 180),
+        expand=False,               # does not ensure corners are kept
+        fill=(123, 117, 104),       # roughly ImageNet mean in 0-255
         interpolation=transforms.InterpolationMode.BILINEAR
     ),
     transforms.RandomPerspective(distortion_scale=0.15, p=0.5),
@@ -66,7 +90,7 @@ data_aug = transforms.Compose([
     # transforms.AutoAugment(   # can use this instead of RandAugment (leads to worse performance)
     #     policy=transforms.AutoAugmentPolicy.IMAGENET
     # ),
-    transforms.RandAugment(     
+    transforms.RandAugment(
         num_ops=2,      # how many transforms to apply per image
         magnitude=9     # overall strength (0-10)
     ),
@@ -134,17 +158,108 @@ def board_to_chars(board):
             board_chars[ri][ci] = chess_piece_id_to_char(id)
     return board_chars
 
-class ChessDataset(Dataset):
-    def __init__(self, root_dir, images_dir, partition, transform=None, use_2k_dataset=False):
+# TODO
+# class ChessDataset(Dataset):
+#     pass
+# class ChessCornersDataset(Dataset):
+#     pass
+
+class ChessCornersDataset(Dataset):
+    # A different dataset class because augmentations for corners require special care here
+    # We use torchvision 0.23 (currently not stable) to be able to use tv_tensors.KeyPoints
+    def __init__(self, root_dir, images_dir, partition, transform, use_2k_dataset=False):
         self.anns = json.load(open(os.path.join(root_dir, 'annotations.json')))
         self.categories = [c['name'] for c in self.anns['categories']]
         self.root = root_dir
         self.images_dir = images_dir
         self.ids = []
         self.file_names = []
+        self.original_widths = []
+        self.original_heights = []
+
         for x in self.anns['images']:
             self.file_names.append(x['path'])
             self.ids.append(x['id'])
+            self.original_widths.append(x['width'])
+            self.original_heights.append(x['height'])
+
+        self.file_names = np.asarray(self.file_names)
+        self.original_heights = np.asarray(self.original_heights)
+        self.original_widths = np.asarray(self.original_widths)
+        self.ids = np.asarray(self.ids)
+
+        self.corners = torch.zeros((len(self.file_names), 4, 2), dtype=torch.float32)
+        for corner_ann in self.anns['annotations']['corners']:
+            corner_data = corner_ann['corners']
+            for i, (corner_label, xyvalues) in enumerate(sorted(corner_data.items())):
+                for coord in range(2):
+                    self.corners[corner_ann['image_id']][i][coord] = xyvalues[coord]
+
+        splits = self.anns["splits"]["chessred2k"] if use_2k_dataset else self.anns["splits"]
+        if partition == 'train':
+            self.split_ids = np.asarray(splits['train']['image_ids']).astype(int)
+        elif partition == 'valid':
+            self.split_ids = np.asarray(splits['val']['image_ids']).astype(int)
+        else:
+            self.split_ids = np.asarray(splits['test']['image_ids']).astype(int)
+
+        intersect = np.isin(self.ids, self.split_ids)
+        self.split_ids = np.where(intersect)[0]
+        self.file_names = self.file_names[self.split_ids]
+        self.corners = self.corners[self.split_ids]
+        self.original_heights = self.original_heights[self.split_ids]
+        self.original_widths = self.original_widths[self.split_ids]
+        self.ids = self.ids[self.split_ids]
+
+        self.transform = transform
+        print(f"Number of {partition} images: {len(self.file_names)}")
+
+    def __len__(self):
+        return len(self.file_names)
+
+    def __getitem__(self, i):
+        # about 750x750 (3000 / 4)
+        image = cv2.imread(os.path.join(self.images_dir, self.file_names[i]), cv2.IMREAD_REDUCED_COLOR_4)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        original_width = self.original_widths[i]
+        original_height = self.original_heights[i]
+        h, w, _ = image.shape
+        sx = w / original_width
+        sy = h / original_height
+
+        corners_scaled = self.corners[i].clone()
+        corners_scaled[:, 0] *= sx
+        corners_scaled[:, 1] *= sy
+
+        image_chw = image.transpose((2, 0, 1))
+        img_tv = tv_tensors.Image(image_chw)
+        kps_tv = tv_tensors.KeyPoints(corners_scaled.unsqueeze(0), canvas_size=(h, w))
+
+        img_transformed, kps_transformed = self.transform(img_tv, kps_tv)
+
+        # Normalize to [0-1]
+        _, final_h, final_w = img_transformed.shape
+        kps_transformed[:,:,0] /= final_w
+        kps_transformed[:,:,1] /= final_h
+
+        final_corners = kps_transformed.squeeze(0)
+
+        return img_transformed, final_corners
+
+class ChessDataset(Dataset):
+    def __init__(self, root_dir, images_dir, partition, transform, use_2k_dataset=False):
+        self.anns = json.load(open(os.path.join(root_dir, 'annotations.json')))
+        self.categories = [c['name'] for c in self.anns['categories']]
+        self.root = root_dir
+        self.images_dir = images_dir
+        self.ids = []
+        self.file_names = []
+
+        for x in self.anns['images']:
+            self.file_names.append(x['path'])
+            self.ids.append(x['id'])
+
         self.file_names = np.asarray(self.file_names)
         self.ids = np.asarray(self.ids)
         self.occupancy_boards = torch.zeros((len(self.file_names), 8, 8))
@@ -183,14 +298,47 @@ class ChessDataset(Dataset):
         image = cv2.imread(os.path.join(self.images_dir, self.file_names[i]), cv2.IMREAD_REDUCED_COLOR_4)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        if self.transform:
-            image = self.transform(image)
+        image = self.transform(image)
 
         num_pieces = self.num_pieces[i]
         board = self.boards[i]
         occupancy_board = self.occupancy_boards[i]
 
         return image, num_pieces.float(), board, occupancy_board
+
+
+def get_chessboard_predictor_targets(batch):
+    return batch[2].long()
+
+def get_num_pieces_predictor_targets(batch):
+    return batch[1]
+
+def calculate_accuracy(all_preds, all_labels):
+    return (all_preds == all_labels).float().mean().item()
+
+def calculate_mae(all_preds, all_labels):
+    return mean_absolute_error(all_labels, all_preds.detach().numpy())
+
+def get_preds_chessboard(outputs):
+    preds = outputs.argmax(dim=1)
+    return preds
+
+def get_corners_predictor_targets(batch):
+    # The model predicts a flat tensor of shape (N, 8)
+    # The target is (N, 4, 2), so turn it to shape (N, 8)
+    return batch[1].view(-1, 8)
+
+def calculate_corners_metric(all_preds, all_labels):
+    # Mean Euclidean Distance between predicted and true corners
+    # all_preds and all_labels are (N, 8) where N is batch_size, 8 is (x1,y1,x2,y2,x3,y3,x4,y4)
+    # Reshape to (N, 4, 2)
+    all_preds_reshaped = all_preds.view(-1, 4, 2)
+    all_labels_reshaped = all_labels.view(-1, 4, 2)
+
+    # Calculate Euclidean distance for each corner and then average
+    distances = torch.sqrt(torch.sum((all_preds_reshaped - all_labels_reshaped)**2, dim=-1))
+    mean_distance_per_corner = torch.mean(distances)
+    return mean_distance_per_corner.item()
 
 class ChessboardPredictor(nn.Module):
     def __init__(self, backbone, in_channels):
@@ -210,21 +358,22 @@ class ChessboardPredictor(nn.Module):
         x = flat_x.view(batch_size, 13, 8, 8)
         return x
 
-def get_chessboard_predictor_targets(batch):
-    return batch[2].long()
+class CornersPredictor(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model  # should predict: 4 corners * 2 coordinates (x, y)
 
-def get_num_pieces_predictor_targets(batch):
-    return batch[1]
+    @staticmethod
+    def create_efficient_net(pretrained: bool = True):
+        weights = models.EfficientNet_V2_S_Weights.DEFAULT if pretrained else None
+        conv_model = models.efficientnet_v2_s(weights=weights)
+        conv_model.classifier[1] = nn.Linear(conv_model.classifier[1].in_features, out_features=8)
+        return CornersPredictor(conv_model)
 
-def calculate_accuracy(all_preds, all_labels):
-    return (all_preds == all_labels).float().mean().item()
-
-def calculate_mae(all_preds, all_labels):
-    return mean_absolute_error(all_labels, all_preds.detach().numpy())
-
-def get_preds_chessboard(outputs):
-    preds = outputs.argmax(dim=1)
-    return preds
+    def forward(self, x):
+        corners = self.model(x)
+        corners = torch.sigmoid(corners)
+        return corners
 
 class NumPiecesPredictor(nn.Module):
     def __init__(self, model):
@@ -349,6 +498,18 @@ def epoch_iter_chessboard(model, dataloader, loss_fn, optimizer=None, is_trainin
         device=device,
     )
 
+def epoch_iter_corners(model, dataloader, loss_fn, optimizer=None, is_training=True, device='cuda'):
+    return epoch_iter(
+        model,
+        dataloader,
+        loss_fn,
+        get_targets_fn=get_corners_predictor_targets,
+        calculate_metric_fn=calculate_corners_metric,
+        optimizer=optimizer,
+        is_training=is_training,
+        device=device,
+    )
+
 def plot_train_history(train_values, val_values, ylabel: str, filename: str, title: Optional[str] = None):
     """
     Plots training and validation values (e.g., loss or accuracy) over epochs.
@@ -465,7 +626,6 @@ def train_model_num_pieces(
             best_val_mae = val_mae
             best_model_state = deepcopy(model.state_dict())
             best_val_preds = val_preds
-            val_labels = val_labels
 
         if scheduler:
             scheduler.step()
@@ -478,6 +638,67 @@ def train_model_num_pieces(
 
         plot_train_history(train_losses, val_losses, "Loss", os.path.join(save_dir, "loss.png"))
         plot_train_history(train_scores, val_scores, "MAE", os.path.join(save_dir, "mae.png"))
+        print(f"Saved training history plots in {save_dir}")
+
+    # Load best model
+    if best_model_state:
+        model.load_state_dict(best_model_state)
+
+    return model
+
+def train_model_corners(
+    model,
+    train_loader,
+    valid_loader,
+    optimizer,
+    loss_fn,
+    scheduler=None,
+    device='cuda',
+    epochs=10,
+    save_dir: Optional[str] = None,
+) -> nn.Module:
+    best_val_distance = float('inf')
+    best_model_state = None
+
+    train_losses, val_losses = [], []
+    train_scores, val_scores = [], []
+
+    best_val_preds, val_labels = [], []
+
+    print(">> Training Corners model")
+    for epoch in range(epochs):
+        # Train
+        train_loss, train_distance, _, __ = epoch_iter_corners(model, train_loader, loss_fn, optimizer=optimizer, is_training=True, device=device)
+
+        # Validate
+        val_loss, val_distance, val_preds, val_labels = epoch_iter_corners(model, valid_loader, loss_fn, is_training=False, device=device)
+
+        print(f"Epoch {epoch+1:02d}/{epochs:02d} | "
+              f"Train Loss: {train_loss:.5f}, Mean Distance: {train_distance:.5f} | "
+              f"Val Loss: {val_loss:.5f}, Mean Distance: {val_distance:.5f}")
+
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+        train_scores.append(train_distance)
+        val_scores.append(val_distance)
+
+        # Save best model
+        if val_distance < best_val_distance:
+            best_val_distance = val_distance
+            best_model_state = deepcopy(model.state_dict())
+            best_val_preds = val_preds
+
+        if scheduler:
+            scheduler.step()
+
+    print(f"\nBest Validation Mean Distance: {best_val_distance:.5f}")
+
+    if save_dir:
+        save_model_results(filename=os.path.join(save_dir, f"valid"), preds=best_val_preds.numpy(), true=val_labels.numpy())
+        print(f"Saved best validation results in {save_dir}")
+
+        plot_train_history(train_losses, val_losses, "Loss", os.path.join(save_dir, "loss.png"))
+        plot_train_history(train_scores, val_scores, "Mean Distance", os.path.join(save_dir, "mean_distance.png"))
         print(f"Saved training history plots in {save_dir}")
 
     # Load best model
@@ -597,6 +818,44 @@ def visualise_num_pieces_sample(img_tensor, pred_count, gt_count, out_file):
     cv2.putText(photo_bgr, text_gt, text_gt_pos, font, font_scale, color_gt, thickness)
     cv2.putText(photo_bgr, text_pred, text_pred_pos, font, font_scale, color_pred, thickness)
     cv2.imwrite(out_file, photo_bgr)
+
+def visualise_corners_sample(img_tensor, pred, true, out_file, alpha=0.6):
+    """Draws predicted and ground truth corners with per-circle alpha blending."""
+    photo = denormalise(img_tensor)  # (H, W, 3) in RGB uint8
+    photo_bgr = cv2.cvtColor(photo, cv2.COLOR_RGB2BGR)
+    h, w, _ = photo_bgr.shape
+
+    # Scale normalized [0, 1] coordinates back to pixel values
+    denorm_factor = np.array([w, h])
+    pred_corners = pred.reshape(4, 2) * denorm_factor
+    true_corners = true.reshape(4, 2) * denorm_factor
+
+    # Convert base image to 4 channels (BGRA) to support blending
+    photo_bgra = cv2.cvtColor(photo_bgr, cv2.COLOR_BGR2BGRA)
+
+    def draw_circle_with_alpha(image, center, radius, color_bgr, alpha):
+        """Draw a single circle with alpha blending onto a BGRA image."""
+        overlay = np.zeros_like(image, dtype=np.uint8)
+        b, g, r = color_bgr
+        # Add circle with full alpha in overlay
+        cv2.circle(overlay, center, radius, (b, g, r, int(255 * alpha)), thickness=-1)
+
+        # Alpha blend
+        mask = overlay[..., 3:] / 255.0
+        image[..., :3] = (1 - mask) * image[..., :3] + mask * overlay[..., :3]
+
+    # Draw predicted corners (red, semi-transparent)
+    for px, py in pred_corners:
+        draw_circle_with_alpha(photo_bgra, (int(px), int(py)), radius=5, color_bgr=(0, 0, 255), alpha=alpha)
+
+    # Draw ground truth corners (green, semi-transparent)
+    for tx, ty in true_corners:
+        draw_circle_with_alpha(photo_bgra, (int(tx), int(ty)), radius=3, color_bgr=(0, 255, 0), alpha=alpha)
+
+    # Convert back to BGR before saving
+    final_bgr = cv2.cvtColor(photo_bgra, cv2.COLOR_BGRA2BGR)
+    cv2.imwrite(out_file, final_bgr)
+
 
 def visualise_preds(model, dataloader, device, viz_sample_fn, viz_dir, get_targets_fn, get_preds_fn, max_viz_cnt=50):
     os.makedirs(viz_dir, exist_ok=True)
@@ -842,12 +1101,82 @@ def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, d
             get_preds_fn=None,
         )
 
+def main_corners(args, train_dataloader, valid_dataloader, test_dataloader, device):
+    save_dir = get_model_results_save_dir(args.model_name)
+    model_save_path = os.path.join(save_dir, args.model_name + ".pth")
+
+    model = CornersPredictor.create_efficient_net(pretrained=True).to(device)
+
+    # Change loss function if desired
+    loss_fn = nn.MSELoss()
+    # loss_fn = nn.L1Loss()
+    if args.mode == "train":
+        os.makedirs(save_dir, exist_ok=False)
+        epochs = 200
+
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+
+        model = train_model_corners(
+            model,
+            train_dataloader,
+            valid_dataloader,
+            optimizer,
+            loss_fn,
+            scheduler,
+            device,
+            epochs=epochs,
+            save_dir=save_dir,
+        )
+        torch.save(model.state_dict(), model_save_path)
+        print(f"Model saved to {model_save_path}")
+
+    elif args.mode.startswith("infer"):
+        if args.mode == "infer-test":
+            filename = "test"
+            dataloader = test_dataloader
+        elif args.mode == "infer-valid":
+            filename = "valid"
+            dataloader = valid_dataloader
+        else:
+            raise ValueError("Invalid args mode found in main_num_pieces")
+
+        print(f"Loading model from {model_save_path}")
+        model.load_state_dict(torch.load(model_save_path, map_location=device))
+        model.eval()
+
+        test_loss, test_distance, all_preds, all_labels = epoch_iter_corners(
+            model,
+            dataloader,
+            loss_fn=loss_fn,
+            is_training=False,
+            device=device,
+        )
+        save_model_results(filename=os.path.join(save_dir, filename), preds=all_preds.numpy(), true=all_labels.numpy())
+        print(f"Test Loss: {test_loss:.4f}, Mean Distance: {test_distance:.4f}")
+
+        visualise_preds(
+            model,
+            dataloader,
+            device,
+            viz_sample_fn=visualise_corners_sample,
+            viz_dir="corners_visualisations",
+            get_targets_fn=get_corners_predictor_targets,
+            get_preds_fn=None,
+        )
+
+def handle_delivery_jsons(args):
+    # load model from args.model_name
+    pass
+
+
 def main():
     parser = argparse.ArgumentParser()
-    # TODO: add something like is-delivery (e.g. mode "delivery")
-    parser.add_argument("--mode", type=str, choices=["train", "infer-valid", "infer-test", "tune"], default="infer-test",
+    parser.add_argument("--delivery", type=bool, default=True,
+                        help="Whether the we should just test instances with a model from a input.json and output results to an output.json")
+    parser.add_argument("--mode", type=str, choices=["train", "infer-valid", "infer-test", "tune", "visualise"], default="infer-test",
                         help="Whether to train a new model, run inference or perform hyperparameter tuning")
-    parser.add_argument("--type", type=str, choices=["chessboard", "num-pieces"], default="num-pieces",
+    parser.add_argument("--type", type=str, choices=["chessboard", "num-pieces", "corners"], default="num-pieces",
                         help="The type of the model to use/train")
     parser.add_argument("--model-name", type=str, default="best_model",
                         help="Name of the save model weights for inference (e.g. best_model)")
@@ -855,13 +1184,22 @@ def main():
                         help="The batch size for training or inference")
     args = parser.parse_args()
 
-    root_dir = "complete_dataset"
-    images_dir = os.path.join(root_dir, "chessred")
+    if args.delivery:
+        handle_delivery_jsons(args)
 
-    # For no augmentations during training, replace data_aug with data_in
-    train_dataset = ChessDataset(root_dir, images_dir, 'train', data_aug)
-    valid_dataset = ChessDataset(root_dir, images_dir, 'valid', data_in)
-    test_dataset = ChessDataset(root_dir, images_dir, 'test', data_in)
+    root_dir = "complete_dataset"
+    images_dir = os.path.join(root_dir, "chessred2k" if use_2k_dataset else "chessred")
+
+    # For no augmentations during training, replace data_aug with data_in (in train_dataset)
+    if args.type == "corners":
+        use_2k_dataset = True
+        train_dataset = ChessCornersDataset(root_dir, images_dir, 'train', corners_manual_data_aug, use_2k_dataset)
+        valid_dataset = ChessCornersDataset(root_dir, images_dir, 'valid', data_in, use_2k_dataset)
+        test_dataset = ChessCornersDataset(root_dir, images_dir, 'test', data_in, use_2k_dataset)
+    else:
+        train_dataset = ChessDataset(root_dir, images_dir, 'train', data_aug)
+        valid_dataset = ChessDataset(root_dir, images_dir, 'valid', data_in)
+        test_dataset = ChessDataset(root_dir, images_dir, 'test', data_in)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using {device} device")
@@ -874,8 +1212,9 @@ def main():
     valid_dataloader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False)
     test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, drop_last=False)
 
-    experiment(train_dataloader)  # uncomment to visualise train dataloader (mostly for visualizing augmentations)
-    exit(0)
+    if args.mode == "visualise":
+        experiment(train_dataloader)  # Visualise train dataloader (for visualising augmentations)
+        exit(0)
 
     if args.type == "chessboard":
         main_chessboard(args, train_dataloader, valid_dataloader, test_dataloader, device)
@@ -884,5 +1223,7 @@ def main():
             hyperparameter_tuning_optuna(args, train_dataloader, valid_dataloader, device)
         else:
             main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, device)
+    elif args.type == "corners":
+        main_corners(args, train_dataloader, valid_dataloader, test_dataloader, device)
 if __name__ == "__main__":
     main()
