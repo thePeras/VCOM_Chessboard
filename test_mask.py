@@ -14,7 +14,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 image_path = "complete_dataset/images/33/G033_IMG000.jpg"
 input_img = Image.open(image_path).convert("RGB")
 
-from task3_segmentation import UNet, transforms
+from task3_segmentation import UNet, transform as mask_transforms
 
 
 # Load model and weights
@@ -26,7 +26,7 @@ def preprocess_image(image_path):
     img = Image.open(image_path).convert("RGB")
     img_np = np.array(img)
 
-    augmented = transforms(image=img_np)
+    augmented = mask_transforms(image=img_np)
     img_transformed = augmented['image']  # this is already a tensor if ToTensorV2 is used
     
     # If img_transformed is already a tensor, just:

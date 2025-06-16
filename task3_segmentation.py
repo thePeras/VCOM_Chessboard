@@ -1,62 +1,64 @@
 import os
 import cv2
-from torch.utils.data import Dataset, DataLoader
+import json
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision import transforms
+from torch.utils.data import Dataset, DataLoader
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import matplotlib.pyplot as plt
-import json
+import numpy as np
 
 # ---------------------------
-# 1. Dataset
+# Paths
+# ---------------------------
+START_PATH = 'complete_dataset/'
+ANNOTATION_PATH = START_PATH + 'annotations.json'
+
+with open(ANNOTATION_PATH, 'r') as f:
+    data = json.load(f)
+
+images = data['images']
+train_ids = data['splits']['chessred2k']['train']['image_ids']
+val_ids = data['splits']['chessred2k']['val']['image_ids']
+
+train_paths = [START_PATH + images[img_id]["path"] for img_id in train_ids]
+val_paths = [START_PATH + images[img_id]["path"] for img_id in val_ids]
+
+# ---------------------------
+# Dataset
 # ---------------------------
 class ChessboardDataset(Dataset):
-    def __init__(self, image_dir, mask_dir, transform=None):
-        self.image_dir = image_dir
-        self.mask_dir = mask_dir
+    def __init__(self, image_paths, transform=None):
+        self.image_paths = [(path, path.replace("images", "masks")) for path in image_paths]
         self.transform = transform
-
-        if not os.path.exists(image_dir):
-            raise ValueError(f"Image directory '{image_dir}' does not exist.")
-        if not os.path.exists(mask_dir):
-            raise ValueError(f"Mask directory '{mask_dir}' does not exist.")
-
-        self.image_paths = []
-        for root, _, files in os.walk(image_dir):
-            for file in files:
-                if file.lower().endswith((".jpg", ".png", ".jpeg")):
-                    full_image_path = os.path.join(root, file)
-                    relative_path = os.path.relpath(full_image_path, image_dir)
-                    full_mask_path = os.path.join(mask_dir, relative_path)
-                    self.image_paths.append((full_image_path, full_mask_path))
 
     def __len__(self):
         return len(self.image_paths)
 
     def __getitem__(self, idx):
         img_path, mask_path = self.image_paths[idx]
-        
+
         image = cv2.imread(img_path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-        mask = (mask > 127).astype('float32')  # binary mask
+        mask = (mask > 127).astype('float32')
 
         if self.transform:
             augmented = self.transform(image=image, mask=mask)
             image = augmented["image"]
-            mask = augmented["mask"].unsqueeze(0)  # (1, H, W)
+            mask = augmented["mask"].unsqueeze(0)
 
         return image, mask
 
 # ---------------------------
-# 2. U-Net Model
+# Model
 # ---------------------------
 class UNet(nn.Module):
     def __init__(self):
         super().__init__()
+
         def conv_block(in_ch, out_ch):
             return nn.Sequential(
                 nn.Conv2d(in_ch, out_ch, 3, padding=1),
@@ -90,121 +92,128 @@ class UNet(nn.Module):
         e2 = self.encoder2(self.pool(e1))
         e3 = self.encoder3(self.pool(e2))
         e4 = self.encoder4(self.pool(e3))
+
         b = self.bottleneck(self.pool(e4))
+
         d4 = self.decoder4(torch.cat([self.upconv4(b), e4], dim=1))
         d3 = self.decoder3(torch.cat([self.upconv3(d4), e3], dim=1))
         d2 = self.decoder2(torch.cat([self.upconv2(d3), e2], dim=1))
         d1 = self.decoder1(torch.cat([self.upconv1(d2), e1], dim=1))
+
         return torch.sigmoid(self.conv_last(d1))
 
 # ---------------------------
-# 3. Transforms
+# Transforms
 # ---------------------------
-train_transform = A.Compose([
+transform = A.Compose([
     A.Resize(640, 640),
     A.Normalize(),
     ToTensorV2()
 ])
 
 # ---------------------------
-# 4. Training Loop
+# Utils
 # ---------------------------
-def train(model, dataloader, optimizer, criterion, device):
-    model.train()
-    total_loss = 0
-    for imgs, masks in dataloader:
-        imgs, masks = imgs.to(device), masks.to(device)
+def compute_accuracy(preds, targets, threshold=0.5):
+    preds = (preds > threshold).float()
+    correct = (preds == targets).float().sum()
+    total = torch.numel(preds)
+    return correct / total
 
+# ---------------------------
+# Training and Evaluation
+# ---------------------------
+def train_one_epoch(model, loader, criterion, optimizer, device):
+    model.train()
+    total_loss, total_acc = 0, 0
+
+    for images, masks in loader:
+        images, masks = images.to(device), masks.to(device)
         optimizer.zero_grad()
-        outputs = model(imgs)
+
+        outputs = model(images)
         loss = criterion(outputs, masks)
         loss.backward()
         optimizer.step()
 
         total_loss += loss.item()
-    return total_loss / len(dataloader)
+        total_acc += compute_accuracy(outputs, masks).item()
+
+    return total_loss / len(loader), total_acc / len(loader)
+
+def evaluate(model, loader, criterion, device):
+    model.eval()
+    total_loss, total_acc = 0, 0
+
+    with torch.no_grad():
+        for images, masks in loader:
+            images, masks = images.to(device), masks.to(device)
+            outputs = model(images)
+
+            loss = criterion(outputs, masks)
+            total_loss += loss.item()
+            total_acc += compute_accuracy(outputs, masks).item()
+
+    return total_loss / len(loader), total_acc / len(loader)
 
 # ---------------------------
-# 5. Main
+# Main
 # ---------------------------
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_dataset = ChessboardDataset(
-        "/kaggle/input/chessboard-corner-detect/images",
-        "/kaggle/input/chessboard-corner-detect/masks",
-        transform=train_transform
-    )
+    train_dataset = ChessboardDataset(train_paths, transform=transform)
+    val_dataset = ChessboardDataset(val_paths, transform=transform)
+
     train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=8)
 
     model = UNet().to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
     criterion = nn.BCELoss()
 
-    num_epochs = 5
-    loss_history = []
-    accuracy_history = []
+    num_epochs = 10
+    train_loss_hist, train_acc_hist = [], []
+    val_loss_hist, val_acc_hist = [], []
 
-    def compute_accuracy(preds, targets, threshold=0.5):
-        preds = (preds > threshold).float()
-        correct = (preds == targets).float().sum()
-        total = torch.numel(preds)
-        return correct / total
-
-    def train(model, dataloader, optimizer, criterion, device):
-        model.train()
-        running_loss = 0.0
-        running_accuracy = 0.0
-        for images, masks in dataloader:
-            images = images.to(device)
-            masks = masks.to(device)
-
-            optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, masks)
-            loss.backward()
-            optimizer.step()
-
-            running_loss += loss.item()
-            running_accuracy += compute_accuracy(outputs, masks).item()
-
-        avg_loss = running_loss / len(dataloader)
-        avg_accuracy = running_accuracy / len(dataloader)
-        return avg_loss, avg_accuracy
-
+    print("Starting training...\n")
     for epoch in range(num_epochs):
-        print(f"Have started epcoch {epoch+1}/{num_epochs}")
-        loss, accuracy = train(model, train_loader, optimizer, criterion, device)
-        loss_history.append(loss)
-        accuracy_history.append(accuracy)
-        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss:.4f}, Accuracy: {accuracy:.4f}")
+        print(f"Epoch {epoch+1}/{num_epochs} ------------------------")
 
-    # Save model and history
-    torch.save(model.state_dict(), "unet_chessboard.pt")
+        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
+        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
 
-    with open("loss_history.json", "w") as f:
-        json.dump(loss_history, f)
+        train_loss_hist.append(train_loss)
+        train_acc_hist.append(train_acc)
+        val_loss_hist.append(val_loss)
+        val_acc_hist.append(val_acc)
 
-    with open("accuracy_history.json", "w") as f:
-        json.dump(accuracy_history, f)
+        print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}")
+        print(f"Val   Loss: {val_loss:.4f}, Val   Acc: {val_acc:.4f}")
 
-    # Plot loss
-    plt.plot(loss_history, marker='o')
-    plt.title("Training Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
+        torch.save(model.state_dict(), f"checkpoints/unet_epoch_{epoch+1}.pt")
+
+    # Save final model
+    torch.save(model.state_dict(), "unet_final.pt")
+
+    # Plot
+    plt.plot(train_loss_hist, label="Train Loss", marker='o')
+    plt.plot(val_loss_hist, label="Val Loss", marker='x')
+    plt.legend()
+    plt.title("Loss")
     plt.grid(True)
-    plt.savefig("loss_curve.png")
+    plt.savefig("loss_plot.png")
     plt.close()
 
-    # Plot accuracy
-    plt.plot(accuracy_history, marker='o', color='green')
-    plt.title("Training Accuracy")
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy")
+    plt.plot(train_acc_hist, label="Train Acc", marker='o')
+    plt.plot(val_acc_hist, label="Val Acc", marker='x')
+    plt.legend()
+    plt.title("Accuracy")
     plt.grid(True)
-    plt.savefig("accuracy_curve.png")
+    plt.savefig("accuracy_plot.png")
     plt.close()
+
+    print("Training complete!")
 
 if __name__ == "__main__":
     main()

@@ -190,3 +190,5 @@ debug/
 mismatches/
 
 models/mask
+models/orientation
+models/myYolov8x
