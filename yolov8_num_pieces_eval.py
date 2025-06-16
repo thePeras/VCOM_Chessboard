@@ -13,12 +13,12 @@ import json
 import pickle # Import pickle for saving results
 
 # --- Configuration ---
-YOLO_MODEL_PATH = 'myYolov8x/weights/best.pt'  # Path to your trained YOLOv8x model
+YOLO_MODEL_PATH = 'models/myYolov8x/weights/best.pt'  # Path to your trained YOLOv8x model
 COMPLETE_DATASET_ROOT_DIR = 'complete_dataset'
 IMAGES_DIR_NAME = 'chessred' # Or 'chessred2k' if that's what your YOLO model was trained on
 BATCH_SIZE = 16
 NUM_WORKERS = 8
-CONF_THRESHOLD = 0.25 # Confidence threshold for YOLO detections. Adjust if needed.
+CONF_THRESHOLD = 0.50 # Confidence threshold for YOLO detections. Adjust if needed.
 RESULTS_SAVE_DIR = 'results-yolov8x_num_pieces' # Directory to save the pickle file
 PARTITION = 'valid'
 RESULTS_FILENAME = PARTITION + '.pkl' # Name of the pickle file

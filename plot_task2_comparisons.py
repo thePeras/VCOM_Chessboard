@@ -90,8 +90,8 @@ def process_results(
         acc_with_rounded = accuracy_score(true, rounded_pred)
 
         print(f">> Result {model_label}")
-        print(f'MAE: {mae:.2f}')
-        print(f'RMSE: {rmse:.2f}')
+        print(f'MAE: {mae:.4f}')
+        print(f'RMSE: {rmse:.4f}')
         print(f'Accuracy within +/- 1: {acc_within_1:.2%}')
         print(f"Accuracy with rounded values: {acc_with_rounded:.2%}")
 
@@ -211,7 +211,7 @@ def main():
     )
 
     # Best model results
-    process_results([best_model_200], "test", labels=["Best Model"], show_single_plots=True, set_title=False)
+    process_results([best_model_200], "test", labels=["Best Model (200)"], show_single_plots=True, set_title=False)
 
 if __name__ == "__main__":
     try:
