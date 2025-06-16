@@ -157,10 +157,6 @@ def main():
     effnet = lambda num: f"results-numpieces_final_effnetv2s{num}"
     resnet = lambda num: f"results-numpieces_final{num}"
 
-    # Compare basic manual augmentations (with resnet)
-    model_result_dirs = [resnet(i) for i in range(1, 7)]
-    process_results(model_result_dirs, "valid", set_title=False)
-
     # Compare everything at once
     model_result_dirs = [resnet(i) for i in range(1, 6)] + \
         [f"results-numpieces3"] + \
@@ -168,7 +164,12 @@ def main():
         [effnet(i) for i in range(1, 6)] + \
         ["results-numpieces_final_effnetv2s6_smoothl1loss"] + \
         ["results-numpieces_final_effnetv2s7"] + \
-        ["results-best_model"]
+        ["results-best_model"] + \
+        ["results-yolov8x_num_pieces"]
+    process_results(model_result_dirs, "valid", set_title=False)
+
+    # Compare basic manual augmentations (with resnet)
+    model_result_dirs = [resnet(i) for i in range(1, 7)]
     process_results(model_result_dirs, "valid", set_title=False)
 
     # Compare different model architectures (same setup)
@@ -196,19 +197,21 @@ def main():
     labels = ["MSE", "SmoothL1Loss", "L1Loss"]
     process_results(comparisons_loss, "valid", labels=labels, legend_label="Losses", set_title=False)
 
-    best_model = "results-best_model"
+    best_model_30 = "results-best_model"
+    best_model_100 = "results-best_model_100"
+    best_model_200 = "results-best_model_200"
 
     # Compare best models
     process_results(
-        [effnet(6) + "_smoothl1loss", best_model, "results-yolov8x_num_pieces"],
+        [effnet(6) + "_smoothl1loss", best_model_30, best_model_100, best_model_200, "results-yolov8x_num_pieces"],
         "valid",
-        labels=["Previous Best", "Best Model (Tuned)", "Best YOLO Model"],
+        labels=["Previous Best", "Best Model (30)", "Best Model (100)", "Best Model (200)", "Best YOLO Model"],
         legend_label="Models",
         set_title=False,
     )
 
     # Best model results
-    process_results([best_model], "test", labels=["Best Model"], show_single_plots=True, set_title=False)
+    process_results([best_model_200], "test", labels=["Best Model"], show_single_plots=True, set_title=False)
 
 if __name__ == "__main__":
     try:

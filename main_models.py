@@ -105,7 +105,7 @@ data_aug = transforms.Compose([
     # ),
     transforms.RandAugment(
         num_ops=2,      # how many transforms to apply per image
-        magnitude=9     # overall strength (0-10)
+        magnitude=9,    # overall strength
     ),
     transforms.Resize((384, 384)),
     transforms.CenterCrop((384, 384)),
@@ -1106,6 +1106,8 @@ def main_num_pieces(args, train_dataloader, valid_dataloader, test_dataloader, d
     loss_fn = nn.L1Loss()
     if args.mode == "train":
         os.makedirs(save_dir, exist_ok=False)
+
+        # Change here to 100 or 200 to mimic our two best results
         epochs = 30
 
         # optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
@@ -1278,9 +1280,8 @@ def handle_delivery_jsons(args, device):
 ## Handles selecting what models and tasks to run
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--delivery", type=bool, default=True,
-                        help="Whether the we should just test instances with a model from a input.json and output results to an output.json")
-    parser.add_argument("--mode", type=str, choices=["train", "infer-valid", "infer-test", "tune", "visualise"], default="infer-test",
+    parser.add_argument("--mode", type=str, choices=["task2-delivery", "train", "infer-valid", "infer-test", "tune", "visualise"],
+                        default="task2-delivery",
                         help="Whether to train a new model, run inference or perform hyperparameter tuning")
     parser.add_argument("--type", type=str, choices=["chessboard", "num-pieces", "corners"], default="num-pieces",
                         help="The type of the model to use/train")
@@ -1295,27 +1296,27 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using {device} device")
 
-    if args.delivery:
+    if args.mode == "task2-delivery":
         handle_delivery_jsons(args, device)
         return
 
     root_dir = "complete_dataset"
-    images_dir = os.path.join(root_dir, "chessred2k" if use_2k_dataset else "chessred")
 
     # For no augmentations during training, replace data_aug with data_in (in train_dataset)
     if args.type == "corners":
-        use_2k_dataset = True
+        use_2k_dataset = True   # there are corner annotations only for the 2k dataset
+        images_dir = os.path.join(root_dir, "chessred2k")
         train_dataset = ChessCornersDataset(root_dir, images_dir, 'train', corners_manual_data_aug, use_2k_dataset)
         valid_dataset = ChessCornersDataset(root_dir, images_dir, 'valid', data_in, use_2k_dataset)
         test_dataset = ChessCornersDataset(root_dir, images_dir, 'test', data_in, use_2k_dataset)
     else:
+        images_dir = os.path.join(root_dir, "chessred")
         train_dataset = ChessDataset(root_dir, images_dir, 'train', data_aug)
         valid_dataset = ChessDataset(root_dir, images_dir, 'valid', data_in)
         test_dataset = ChessDataset(root_dir, images_dir, 'test', data_in)
 
-    # defaut: 16
+    # Check args for default values
     batch_size = args.batch_size    # as large as possible (depends on image resizes used)
-    # default: 8
     num_workers = args.num_workers
 
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True)
