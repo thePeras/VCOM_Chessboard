@@ -192,6 +192,7 @@ mismatches/
 models/mask
 models/orientation
 models/myYolov8x
+models/pose
 
 results*
 *Yolov8x*

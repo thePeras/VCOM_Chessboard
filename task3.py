@@ -789,29 +789,15 @@ def process_mismatches():
     process_list(list(mismatches['filename']))
 
 
-#print(process_single_image("complete_dataset/images/56/G056_IMG023.jpg"))
-process_all_images()
-#process_mismatches()
+if __name__ == '__main__':
+    # --- Configuration ---
+    PIECE_MODEL_PATH = "models/myYolo11s/weights/best.pt"
+    CORNER_MODEL_PATH = 'models/pose/heatmap.pth'
+    IMAGE_DIRECTORY = "dataset/images/"
+    MISMATCHES_PATH = "mismatches/task3/mismatch_log.csv"
 
-"""
-board = chess.Board(fen_string)
-fen_svg = chess.svg.board(board=board)
-output_filename = "chessboard_render.png"
-cairosvg.svg2png(bytestring=fen_svg.encode('utf-8'), write_to=output_filename)
-print(f"Chessboard image saved to {output_filename}")
-"""
+    # --- Model Loading ---
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.mps.is_available() else "cpu")
+    print(f"Using device: {DEVICE}")
 
-# complete_dataset/images/56/G056_IMG023.jpg
-# 2r3q1/k1ppp1bp/p3p1b1/5n2/4N3/4NP2/P1PPPB1P/2R2Q
-# r2q1rk1/ppp1bppp/2p1b3/3n4/2N5/2NP3P/PPPB1PP1/R2Q2KR
-# 19
-
-# complete_dataset/images/58/G033_IMG011.jpg,
-# RP4pr/NP4p1/BP1B1npb/Q2p2pq/3n3k/RPN3pb/KP4p1/1P4pr
-# r1bqkb1r/pppp1ppp/2n5/8/2Bpn3/5N2/PPP2PPP/RNBQ1RK1
-# 45
-
-# complete_dataset/images/33/G033_IMG011.jpg
-# R3P1pr/1P4pn/BPN2pqb/Q2P1p2/K2Pp2k/BPN2npb/1P4p1/RP4pr
-# rnb1kb1r/ppq2ppp/2pp1n2/P3p3/3PP3/2N2N2/1PP2PPP/R1BQKB1R
-# 40
+    process_all_images()
