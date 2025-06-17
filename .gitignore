@@ -185,3 +185,6 @@ output.json
 debug/
 .vscode
 *visualisations*/
+results*
+*Yolov8x*
+*best_model*
