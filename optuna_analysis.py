@@ -2,9 +2,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import io
-import numpy as np # Import numpy for potential NaN handling
+import numpy as np
 
-filename = "optuna_tuning_results_run4.csv"
+filename = "optuna_tuning_results.csv"
 
 df = pd.read_csv(filename)
 
@@ -14,29 +14,26 @@ df['datetime_complete'] = pd.to_datetime(df['datetime_complete'])
 df['duration'] = df['datetime_complete'] - df['datetime_start']
 
 # Filter for complete trials
-complete_trials = df[df['state'] == 'COMPLETE'].copy() # Use .copy() to avoid SettingWithCopyWarning
-
-# --- Analysis ---
+complete_trials = df[df['state'] == 'COMPLETE'].copy()
 
 print("--- Optuna Hyperparameter Tuning Results Analysis ---")
-print("\n1. Overall Statistics for Complete Trials:")
+print("\nOverall Statistics for Complete Trials:")
 print(complete_trials['value'].describe())
 
 # Find the best trial (minimum 'value' as it's likely a loss metric)
 best_trial = complete_trials.loc[complete_trials['value'].idxmin()]
-print("\n2. Best Trial Found:")
+print("\nBest Trial Found:")
 print(best_trial)
 
-print("\n3. Hyperparameters of the Best Trial:")
+print("\nHyperparameters of the Best Trial:")
 # Extract only parameter columns for the best trial
 params_cols = [col for col in df.columns if col.startswith('params_')]
 print(best_trial[params_cols])
 
-# --- Visualizations ---
 
-print("\n--- Visualizations ---")
+print("\nVisualizations")
 
-# 1. Distribution of 'value' for complete trials
+# Distribution of 'value' for complete trials
 plt.figure(figsize=(10, 6))
 sns.histplot(complete_trials['value'], kde=True)
 plt.title('Distribution of Objective Values (Loss)')
@@ -45,7 +42,7 @@ plt.ylabel('Frequency')
 plt.grid(True, linestyle='--', alpha=0.7)
 plt.show()
 
-# 2. Relationship between learning rate and objective values
+# Relationship between learning rate and objective values
 plt.figure(figsize=(10, 6))
 sns.scatterplot(data=complete_trials, x='params_lr', y='value', hue='params_loss', s=100, alpha=0.7)
 plt.xscale('log') # Learning rates are often log-distributed
@@ -57,7 +54,7 @@ plt.legend(title='Parameters')
 plt.tight_layout()
 plt.show()
 
-# 3. Objective value by loss function
+# Objective value by loss function
 plt.figure(figsize=(10, 6))
 sns.boxplot(data=complete_trials, x='params_loss', y='value')
 plt.title('Objective Value by Loss Function')
@@ -65,15 +62,5 @@ plt.xlabel('Loss Function')
 plt.ylabel('Objective Value')
 plt.grid(True, linestyle='--', alpha=0.7)
 plt.show()
-
-if "params_optimizer" in df.columns:
-    # 4. Objective value by optimizer
-    plt.figure(figsize=(10, 6))
-    sns.boxplot(data=complete_trials, x='params_optimizer', y='value')
-    plt.title('Objective Value by Optimizer')
-    plt.xlabel('Optimizer')
-    plt.ylabel('Objective Value')
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.show()
 
 print("Plots generation complete!")

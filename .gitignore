@@ -197,3 +197,4 @@ models/pose
 results*
 *Yolov8x*
 *best_model*
+best_chessboard_model*

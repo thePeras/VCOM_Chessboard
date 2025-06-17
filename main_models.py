@@ -354,6 +354,9 @@ def calculate_accuracy(all_preds, all_labels):
 def calculate_mae(all_preds, all_labels):
     return mean_absolute_error(all_labels, all_preds.detach().numpy())
 
+def calculate_rounded_mae(all_preds, all_labels):
+    return mean_absolute_error(all_labels, all_preds.detach().numpy().round())
+
 def get_preds_chessboard(outputs):
     preds = outputs.argmax(dim=1)
     return preds
@@ -522,7 +525,7 @@ def epoch_iter_num_pieces(model, dataloader, loss_fn, optimizer=None, is_trainin
         dataloader,
         loss_fn,
         get_num_pieces_predictor_targets,
-        calculate_mae,
+        calculate_rounded_mae, # calculate_mae,
         optimizer=optimizer,
         is_training=is_training,
         device=device,
@@ -830,14 +833,14 @@ def visualise_chessboard_sample(img_tensor, pred_board, gt_board, out_file):
     photo = denormalise(img_tensor)
     h, w  = photo.shape[:2]
 
-    pred_img = make_board_img(pred_board, "Prediction")
     gt_img   = make_board_img(gt_board,   "Ground truth")
+    pred_img = make_board_img(pred_board, "Prediction")
 
     # resize chessboards so they have the same width as the photo
-    pred_img = cv2.resize(pred_img, (w, w), interpolation=cv2.INTER_AREA)
     gt_img   = cv2.resize(gt_img,   (w, w), interpolation=cv2.INTER_AREA)
+    pred_img = cv2.resize(pred_img, (w, w), interpolation=cv2.INTER_AREA)
 
-    canvas = np.concatenate([photo, pred_img, gt_img], axis=0)
+    canvas = np.concatenate([photo, gt_img, pred_img], axis=0)
     cv2.imwrite(out_file, cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR))
 
 def visualise_num_pieces_sample(img_tensor, pred_count, gt_count, out_file):
@@ -1268,7 +1271,7 @@ def handle_delivery_jsons(args, device):
                 print(f"Processed {filename}")
                 output.append({
                     "image": filename,
-                    "num_pieces": float(pred),
+                    "num_pieces": round(pred),
                 })
 
     with open("output.json", "w") as f:
