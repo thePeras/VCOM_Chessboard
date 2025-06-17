@@ -188,6 +188,11 @@ debug/
 *visualisations*/
 
 mismatches/
+
+models/mask
+models/orientation
+models/myYolov8x
+
 results*
 *Yolov8x*
 *best_model*
