@@ -1,6 +1,7 @@
 import math
 import cv2
 import numpy as np
+from shapely.geometry import Polygon
 from ultralytics import YOLO
 import chess
 import chess.svg
@@ -15,135 +16,599 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import pandas as pd
 
-import torch
-import torch.nn as nn
-from torchvision import models, transforms
-
-##==================================== Corner Detection with U-Net Model ====================================================##
-
-class UNetWithResnetEncoder(nn.Module):
-    """A U-Net model using a pretrained ResNet34 as the encoder for corner detection."""
-    def __init__(self, n_class=4, pretrained=False): # Set pretrained=False for inference
-        super().__init__()
-        resnet = models.resnet34(weights=models.ResNet34_Weights.IMAGENET1K_V1 if pretrained else None)
-        self.encoder1 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool)
-        self.encoder2 = resnet.layer1
-        self.encoder3 = resnet.layer2
-        self.encoder4 = resnet.layer3
-        self.encoder5 = resnet.layer4
-        self.upconv4 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
-        self.decoder4 = nn.Sequential(nn.Conv2d(512, 256, 3, padding=1), nn.ReLU(), nn.Conv2d(256, 256, 3, padding=1), nn.ReLU())
-        self.upconv3 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
-        self.decoder3 = nn.Sequential(nn.Conv2d(256, 128, 3, padding=1), nn.ReLU(), nn.Conv2d(128, 128, 3, padding=1), nn.ReLU())
-        self.upconv2 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.decoder2 = nn.Sequential(nn.Conv2d(128, 64, 3, padding=1), nn.ReLU(), nn.Conv2d(64, 64, 3, padding=1), nn.ReLU())
-        self.final_conv = nn.Conv2d(64, n_class, kernel_size=1)
-
-    def forward(self, x):
-        enc1 = self.encoder1(x); enc2 = self.encoder2(enc1); enc3 = self.encoder3(enc2)
-        enc4 = self.encoder4(enc3); enc5 = self.encoder5(enc4)
-        up4 = self.upconv4(enc5); dec4 = self.decoder4(torch.cat([up4, enc4], 1))
-        up3 = self.upconv3(dec4); dec3 = self.decoder3(torch.cat([up3, enc3], 1))
-        up2 = self.upconv2(dec3); dec2 = self.decoder2(torch.cat([up2, enc2], 1))
-        return self.final_conv(dec2)
-
-def get_coords_from_heatmaps(heatmaps):
-    """Extracts normalized (x, y) coordinates from a batch of heatmaps."""
-    batch_size, _, h, w = heatmaps.shape
-    heatmaps_reshaped = heatmaps.reshape(batch_size, 4, -1)
-    max_indices = torch.argmax(heatmaps_reshaped, dim=2)
-    y_coords = (max_indices // w).float()
-    x_coords = (max_indices % w).float()
-    x_coords_norm = x_coords / (w - 1)
-    y_coords_norm = y_coords / (h - 1)
-    return torch.stack([x_coords_norm, y_coords_norm], dim=-1).cpu().numpy()
-
-def predict_board_corners(model, image_path, device, img_size=640):
-    """
-    Predicts the four inner corners of the chessboard using the U-Net model.
-    Returns corners in the order: [top_left, top_right, bottom_right, bottom_left].
-    """
-    transform = transforms.Compose([
-        transforms.Resize((img_size, img_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-    
-    original_image = Image.open(image_path).convert('RGB')
-    orig_w, orig_h = original_image.size
-    image_tensor = transform(original_image).unsqueeze(0).to(device)
-
-    with torch.no_grad():
-        predicted_heatmaps = model(image_tensor)
-    
-    coords_normalized = get_coords_from_heatmaps(predicted_heatmaps)[0]
-
-    corners_pixel = [[int(x_norm * orig_w), int(y_norm * orig_h)] for x_norm, y_norm in coords_normalized]
-        
-    return corners_pixel
-
 ##==================================== Square and Piece Detection Helpers ====================================================##
 
-def get_board_squares(corners, img_color, image_path):
-    """
-    Performs a perspective warp using the 4 inner corners and calculates
-    the 81 grid intersections arithmetically.
-    """
-    WARPED_IMG_SIZE = 800  
+def filter_and_rectify_hough_lines(lines, angle_threshold=10, distance_threshold=20):
 
-    src_points = np.float32(corners)
-    dst_points = np.float32([[0, 0], [WARPED_IMG_SIZE, 0], [WARPED_IMG_SIZE, WARPED_IMG_SIZE], [0, WARPED_IMG_SIZE]])
-
-    warp_matrix = cv2.getPerspectiveTransform(src_points, dst_points)
-    warped_color_img = cv2.warpPerspective(img_color, warp_matrix, (WARPED_IMG_SIZE, WARPED_IMG_SIZE))
+    vertical_candidates = []
+    horizontal_candidates = []
     
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        theta = abs(math.degrees(math.atan2(y2 - y1, x2 - x1)))
+        theta = theta % 180
+        
+        if theta < angle_threshold or theta > (180 - angle_threshold):
+            y_mean = (y1 + y2) // 2
+            horizontal_candidates.append(y_mean)
+        elif abs(theta - 90) < angle_threshold:
+            x_mean = (x1 + x2) // 2
+            vertical_candidates.append(x_mean)
+
+    # Cluster similar horizontal lines by their y coordinate
+    horizontals = []
+    horizontal_candidates.sort()
+    for y in horizontal_candidates:
+        if not horizontals or abs(y - horizontals[-1]) > distance_threshold:
+            horizontals.append(y)
+        else:
+            horizontals[-1] = (horizontals[-1] + y) // 2
+
+    # Cluster similar vertical lines by their x coordinate
+    verticals = []
+    vertical_candidates.sort()
+    for x in vertical_candidates:
+        if not verticals or abs(x - verticals[-1]) > distance_threshold:
+            verticals.append(x)
+        else:
+            verticals[-1] = (verticals[-1] + x) // 2
+
+    return verticals, horizontals
+
+def identify_and_add_missing_lines(verticals, horizontals, max_gap_ratio=1.8):
+    verticals.sort()
+    horizontals.sort()
+    
+    new_verticals = verticals.copy()
+    if len(verticals) >= 2:
+        gaps = [verticals[i+1] - verticals[i] for i in range(len(verticals)-1)]
+        median_gap = sorted(gaps)[len(gaps)//2]  # Using median is more robust than mean
+        
+        for i in range(len(verticals)-1):
+            current_gap = verticals[i+1] - verticals[i]
+            if current_gap > max_gap_ratio * median_gap:
+                # Calculate how many lines are missing
+                n_missing = round(current_gap / median_gap) - 1
+                for j in range(1, n_missing + 1):
+                    # Add estimated line position
+                    new_x = verticals[i] + j * (current_gap / (n_missing + 1))
+                    new_verticals.append(int(new_x))
+    
+    new_horizontals = horizontals.copy()
+    if len(horizontals) >= 2:
+        gaps = [horizontals[i+1] - horizontals[i] for i in range(len(horizontals)-1)]
+        median_gap = sorted(gaps)[len(gaps)//2]
+        
+        for i in range(len(horizontals)-1):
+            current_gap = horizontals[i+1] - horizontals[i]
+            if current_gap > max_gap_ratio * median_gap:
+                n_missing = round(current_gap / median_gap) - 1
+                for j in range(1, n_missing + 1):
+                    new_y = horizontals[i] + j * (current_gap / (n_missing + 1))
+                    new_horizontals.append(int(new_y))
+    
+    new_verticals.sort()
+    new_horizontals.sort()
+    
+    return new_verticals, new_horizontals
+
+def compute_intersections(verticals, horizontals):
     intersections = []
-    square_size = WARPED_IMG_SIZE / 8.0  
-    for r in range(9): 
-        for c in range(9):  
-            x = int(round(c * square_size))
-            y = int(round(r * square_size))
+    for x in verticals:
+        for y in horizontals:
             intersections.append((x, y))
-            
-    found_all_intersections = True
+    return intersections
+
+def filter_intersections_by_distance(intersections, center):
+    """
+    Choose the 81 intersections that are closest to the center of the board,
+    ensuring each point is at least X pixels away from any other selected point.
+    """
+    MIN_DISTANCE_BETWEEN_2_POINTS = 300
+
+    x_center, y_center = center
+    distances = []
+    for point in intersections:
+        x, y = point
+        distance = math.sqrt((x - x_center) ** 2 + (y - y_center) ** 2)
+        distances.append((distance, point))
+
+    distances.sort(key=lambda x: x[0])
+
+    filtered_intersections = [distances[0][1]]
     
-    return intersections, found_all_intersections, warp_matrix, warped_color_img
+    for _, point in distances[1:]:
+        valid_point = True
+        for selected_point in filtered_intersections:
+            x1, y1 = point
+            x2, y2 = selected_point
+            distance = math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+            if distance < MIN_DISTANCE_BETWEEN_2_POINTS:
+                valid_point = False
+                break
+        
+        if valid_point:
+            filtered_intersections.append(point)
+            
+        if len(filtered_intersections) == 81:
+            break
+    
+    square_side = int(math.sqrt(len(filtered_intersections)))
+
+    if len(filtered_intersections) < 81:
+        print(
+            f"Warning: Only found {len(filtered_intersections)} valid intersections with minimum distance of {MIN_DISTANCE_BETWEEN_2_POINTS} pixels"
+        )
+    
+    return filtered_intersections, square_side
+
+##==================================== Chessboard corner detection Helpers ====================================================##
+
+def get_largest_contour(
+    img: np.ndarray,
+    image_path: str,
+    image_name_prefix: str,
+    canny_lower: int,
+    canny_upper: int,
+    min_distance_to_image_border: int,
+    max_distance_to_merge_contours: int,
+):
+    canny = cv2.Canny(img, canny_lower, canny_upper, apertureSize=3, L2gradient=True)
+    
+    # finding contours on the canny edges
+    contours, _ = cv2.findContours(
+        canny, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    # Filter contours: don't use any contours that are too close to the image border
+    img_height, img_width = img.shape[:2]
+    filtered_contours = []
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+
+        if (
+            x > min_distance_to_image_border
+            and y > min_distance_to_image_border
+            and x + w < img_width - min_distance_to_image_border
+            and y + h < img_height - min_distance_to_image_border
+        ):
+            filtered_contours.append(cnt)
+
+    contours = filtered_contours
+    if not contours:
+        print(f"No contours found in {image_path}")
+        return
+
+    # Get the largest contour by convex hull area
+    largest_area = 0
+    largest_contour = None
+    largest_contour_without_ch = None
+    for cnt in contours:
+        contour_ch = cv2.convexHull(cnt)
+        area = cv2.contourArea(contour_ch)
+        if area > largest_area:
+            largest_area = area
+            largest_contour_without_ch = cnt
+            largest_contour = contour_ch
+
+    basic_contour_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    cv2.drawContours(basic_contour_img, [largest_contour], 0, (0, 0, 255), 3)
+
+    # Merge contours with largest contour if distance to the main convex hull is small
+    # Go until no more contours can be merged
+    changed = True
+    contours_to_merge = []
+    while changed:
+        changed = False
+        ncontours = []
+        for cnt in contours:
+            if cnt is largest_contour_without_ch:
+                continue
+            if len(cnt) < 3:  # not a polygon
+                continue
+
+            # contours are (n, 1, 2), take just the 2D points
+            poly1 = Polygon(largest_contour[:, 0, :])
+            poly2 = Polygon(cnt[:, 0, :])
+
+            min_distance = poly1.distance(poly2)
+            if min_distance <= max_distance_to_merge_contours:
+                changed = True
+                largest_contour = cv2.convexHull(np.vstack([largest_contour, cnt]))
+                contours_to_merge.append(cnt)
+            else:
+                ncontours.append(cnt)
+        contours = ncontours
+
+    if largest_contour is None:
+        print(f"No valid contour found in {image_path}")
+        return
+
+    # Draw the largest contour's convex hull: in red
+    contour_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    cv2.drawContours(contour_img, [largest_contour], 0, (0, 0, 255), 3)
+
+    # Draw the largest contour without considering its convex hull: in blue
+    contour_no_ch_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    cv2.drawContours(contour_no_ch_img, [largest_contour_without_ch], 0, (255, 0, 0), 5)
+
+    # Draw the merged contours (no convex hulls)
+    cv2.drawContours(contour_no_ch_img, contours_to_merge, -1, (0, 255, 0), 3)
+
+    # save all the images
+    debug_images = {
+        f"{image_name_prefix}_contour_no_ch_img": contour_no_ch_img,
+        f"{image_name_prefix}_contour": contour_img,
+        f"{image_name_prefix}_basic_contour_img": basic_contour_img,
+        f"{image_name_prefix}_canny": canny,
+    }
+
+    # lambda im=im: im -> used to avoid problems with python lambda and enclosures
+    ready_to_display_images = [(im_name, lambda im=im: im) for im_name, im in debug_images.items()]
+    return {
+        "images": debug_images,
+        "display_images": ready_to_display_images,
+        "largest_contour": largest_contour,
+        "largest_contour_without_ch": largest_contour_without_ch,
+        "contours_to_merge": contours_to_merge,
+    }
+
+def convex_hull_intersection(poly1, poly2):
+    """
+    Calculate the intersection of two polygons and return the convex hull of the intersection.
+    If the intersection is empty, return the first polygon.
+    """
+    # Create polygons from the contours
+    polygon1 = Polygon(poly1[:, 0, :])
+    polygon2 = Polygon(poly2[:, 0, :])
+
+    # Calculate the intersection
+    intersection = polygon1.intersection(polygon2)
+
+    # If there were issues with the intersection, return the first polygon
+    if intersection.is_empty:
+        return poly1
+
+    if intersection.geom_type == "Polygon":
+        x, y = intersection.exterior.coords.xy
+        points = np.array(list(zip(x, y)), dtype=np.int32)
+        return cv2.convexHull(points)
+
+    return poly1
+
+##==================================== Horse to detect the chessboard orientation ================================================##
+def find_orientation(image):
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        img_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        img_gray = image.copy()
+
+    # Safely unpack height and width
+    height, width = img_gray.shape[:2]
+
+    horse_path = "figures/horse.png"
+    horse_img = cv2.imread(horse_path, cv2.IMREAD_GRAYSCALE)
+    
+    if horse_img is None:
+        print("Could not load the horse template image from:", horse_path)
+        return None, None
+
+    corner_size = min(width, height) // 4
+    orientations = {}
+    orientations["bottom_left"] = (
+        img_gray[height - corner_size : height, 0:corner_size],
+        horse_img,
+    )
+
+    orientations["top_left"] = (
+        img_gray[0:corner_size, 0:corner_size],
+        cv2.rotate(horse_img, cv2.ROTATE_90_CLOCKWISE),
+    )
+
+    orientations["top_right"] = (
+        img_gray[0:corner_size, width - corner_size : width],
+        cv2.rotate(horse_img, cv2.ROTATE_180),
+    )
+
+    orientations["bottom_right"] = (
+        img_gray[height - corner_size : height, width - corner_size : width],
+        cv2.rotate(horse_img, cv2.ROTATE_90_COUNTERCLOCKWISE),
+    )
+
+    best_score = -1.0
+    best_match_loc = None
+    best_rotation = None
+    best_corner = None
+
+    for corner_name, (corner_img, horse_template) in orientations.items():
+        target_size = corner_size // 4
+        if target_size < 1:
+            continue
+
+        h_t, w_t = horse_template.shape[:2]
+
+        scale = target_size / max(h_t, w_t)
+        new_w = max(1, int(w_t * scale))
+        new_h = max(1, int(h_t * scale))
+        resized_template = cv2.resize(horse_template, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        
+        if corner_img.shape[0] < resized_template.shape[0] or corner_img.shape[1] < resized_template.shape[1]:
+            continue
+
+        result = cv2.matchTemplate(corner_img, resized_template, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+        if max_val > best_score:
+            best_score = max_val
+            if corner_name == "bottom_left":
+                match_x = max_loc[0]
+                match_y = height - corner_size + max_loc[1]
+                best_rotation = None 
+            elif corner_name == "top_left":
+                match_x = max_loc[0]
+                match_y = max_loc[1]
+                best_rotation = cv2.ROTATE_90_COUNTERCLOCKWISE
+            elif corner_name == "top_right":
+                match_x = width - corner_size + max_loc[0]
+                match_y = max_loc[1]
+                best_rotation = cv2.ROTATE_180
+            elif corner_name == "bottom_right":
+                match_x = width - corner_size + max_loc[0]
+                match_y = height - corner_size + max_loc[1]
+                best_rotation = cv2.ROTATE_90_CLOCKWISE
+
+            best_match_loc = (match_x, match_y)
+            best_corner = corner_name
+
+    return best_rotation, best_match_loc, best_corner
+
+
+def get_board_cornes(
+    image_path,
+):
+    # For corner detection
+    THRESHOLD_MAXVAL: int = 255
+    THRESHOLD_THRESH: int = 200
+    CANNY_LOWER: int = 100
+    CANNY_UPPER: int = 250
+    MAX_DISTANCE_TO_MERGE_CONTOURS: int = 5
+    MIN_DISTANCE_TO_IMAGE_BORDER: int = 10
+
+    img_color = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    if img_color is None:
+        print(f"Failed to load image: {image_path}")
+        return
+
+
+    img = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+    img_to_blur = img.copy()
+
+    # Apply a Gaussian blur - To eliminate the noise in segmentation
+    blur_img = cv2.GaussianBlur(img_to_blur, (11, 11), 0)
+
+    # Apply global binary threshold - Board segmentation (by intensity)
+    _, th_global = cv2.threshold(
+        blur_img, THRESHOLD_THRESH, THRESHOLD_MAXVAL, cv2.THRESH_BINARY
+    )
+
+    base_img_contour_results = get_largest_contour(
+        img,
+        image_path,
+        "base_img",
+        CANNY_LOWER,
+        CANNY_UPPER,
+        MIN_DISTANCE_TO_IMAGE_BORDER,
+        MAX_DISTANCE_TO_MERGE_CONTOURS,
+    )
+    threshold_contour_results = get_largest_contour(
+        th_global,
+        image_path,
+        "threshold_img",
+        CANNY_LOWER,
+        CANNY_UPPER,
+        MIN_DISTANCE_TO_IMAGE_BORDER,
+        MAX_DISTANCE_TO_MERGE_CONTOURS,
+    )
+
+    largest_contour_base_img = base_img_contour_results["largest_contour"]
+    largest_contour_threshold = threshold_contour_results["largest_contour"]
+
+    largest_contour = convex_hull_intersection(
+        largest_contour_base_img, largest_contour_threshold
+    )
+
+    # --- Corner Detection ---
+    # Approximate the contour to a polygon with four points
+    perimeter = cv2.arcLength(largest_contour, True)
+    epsilon = 0.01 * perimeter  # Initial approximation parameter (1% of perimeter)
+    approx = cv2.approxPolyDP(largest_contour, epsilon, True)
+
+    # Adjust epsilon until we get exactly 4 points
+    max_attempts = 10
+    attempt = 0
+    while len(approx) != 4 and attempt < max_attempts:
+        epsilon *= 1.2  # Increase epsilon by 20% each iteration
+        approx = cv2.approxPolyDP(largest_contour, epsilon, True)
+        attempt += 1
+
+    if len(approx) != 4:
+        print(
+            f"Could not approximate to four points for {image_path} after {max_attempts} attempts"
+        )
+
+    # Extract the four points
+    return [pt[0] for pt in approx]
+
+def get_board_squares(corners, img, img_color, image_path):
+    # Order points: top-left, top-right, bottom-left, bottom-right
+    points = corners
+    points.sort(key=lambda p: p[1])  # Sort by y-coordinate
+    top_points = points[:2]
+    bottom_points = points[2:4]
+    top_points.sort(key=lambda p: p[0])  # Sort top points by x-coordinate
+    bottom_points.sort(key=lambda p: p[0])  # Sort bottom points by x-coordinate
+    top_left, top_right = top_points
+    bottom_left, bottom_right = bottom_points
+
+    top_left_comp = (0, 0)
+    bottom_left_comp = (0, img.shape[0])
+    top_right_comp = (img.shape[1], 0)
+    bottom_right_comp = (img.shape[1], img.shape[0])
+
+    # Create the warp matrix based on the points and the destination points
+    warp_matrix = cv2.getPerspectiveTransform(
+        np.float32([top_left, bottom_left, top_right, bottom_right]),
+        np.float32(
+            [top_left_comp, bottom_left_comp, top_right_comp, bottom_right_comp]
+        ),
+    )
+
+    # Apply the warp matrix to the image    
+    warped_gray_img = cv2.warpPerspective(img, warp_matrix, (img.shape[1], img.shape[0]))
+    warped_color_img = cv2.warpPerspective(img_color, warp_matrix, (img.shape[1], img.shape[0]))
+    
+    # CLAHE
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    clahe_img = clahe.apply(warped_gray_img)
+
+    # Gaussian Blur
+    blurred_warped = cv2.GaussianBlur(clahe_img, (7, 7), 0)
+
+    # Canny Edge Detection
+    canny = cv2.Canny(blurred_warped, 50, 150)
+
+    # Dilation
+    kernel = np.ones((5, 5), np.uint8)
+    dilated = cv2.dilate(canny, kernel, iterations=1)
+    
+    # Hough Line Transform
+    lines = cv2.HoughLinesP(
+        dilated, 1, np.pi / 180, 500, minLineLength=1700, maxLineGap=400
+    )
+
+    # Draw lines on the original image
+    hough_lines_img = cv2.cvtColor(warped_gray_img, cv2.COLOR_GRAY2BGR)
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            cv2.line(hough_lines_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    else:
+        print(f"No lines detected in {image_path}")
+
+    filtered_intersections = []
+    if lines is not None:
+        verticals, horizontals = filter_and_rectify_hough_lines(
+            lines, angle_threshold=10, distance_threshold=20
+        )
+        
+        verticals, horizontals = identify_and_add_missing_lines(verticals, horizontals)
+        
+        rectified_verticals = [(x, 0, x, img.shape[0]) for x in verticals]
+        rectified_horizontals = [(0, y, img.shape[1], y) for y in horizontals]
+        
+        hough_lines_rectified_img = cv2.cvtColor(warped_gray_img, cv2.COLOR_GRAY2BGR)
+        filtered_intersections_img = cv2.cvtColor(warped_gray_img, cv2.COLOR_GRAY2BGR)
+        
+        # vertical lines
+        for x, y0, x2, y2 in rectified_verticals:
+            cv2.line(hough_lines_rectified_img, (x, y0), (x2, y2), (255, 200, 0), 10)
+            
+        # horizontal lines
+        for x0, y, x2, y2 in rectified_horizontals:
+            cv2.line(hough_lines_rectified_img, (x0, y), (x2, y2), (255, 200, 0), 10)
+        
+        intersections = compute_intersections(verticals, horizontals)
+        for point in intersections:
+            cv2.circle(hough_lines_rectified_img, point, 25, (0, 0, 255), -1)
+
+        if intersections != []:
+            x_center, y_center = warped_gray_img.shape[1] // 2, warped_gray_img.shape[0] // 2
+
+            filtered_intersections, square_side = filter_intersections_by_distance(intersections, (x_center, y_center))
+            for point in filtered_intersections:
+                cv2.circle(filtered_intersections_img, point, 25, (0, 255, 0), -1)
+
+    else:
+        print(f"No lines detected in {image_path}")
+
+    filtered_intersections.sort(key=lambda p: (p[1], p[0]))
+
+    found_all_intersections = None
+    if len(filtered_intersections) >= 81:
+        rows = cols = 8
+        step = 9
+        found_all_intersections = True
+    else:
+        grid_side = int(math.sqrt(len(filtered_intersections))) - 1
+        rows = cols = grid_side if grid_side > 0 else 0
+        step = grid_side + 1
+        print(f"Using a {rows}x{cols} grid with {len(filtered_intersections)} intersections")
+        found_all_intersections = False
+
+    return filtered_intersections, found_all_intersections, warp_matrix, warped_color_img
 
 FEN_MAP = {
-    "white-pawn": "P", "white-rock": "R", "white-knight": "N", "white-bishop": "B", "white-queen": "Q", "white-king": "K", 
-    "black-pawn": "p", "black-rock": "r", "black-knight": "n", "black-bishop": "b", "black-queen": "q", "black-king": "k",
+    "white-pawn": "P",
+    "white-rock": "R", 
+    "white-knight": "N",
+    "white-bishop": "B",
+    "white-queen": "Q",
+    "white-king": "K", 
+    "black-pawn": "p",
+    "black-rock": "r",
+    "black-knight": "n",
+    "black-bishop": "b",
+    "black-queen": "q",
+    "black-king": "k",
 }
 
-def map_pieces_to_board(yolo_result, warp_matrix, fen_map, warped_size=800):
-    """ Maps detected pieces to the board using the calculated grid on the warped image. """
+
+def map_pieces_to_board(yolo_result, intersections, warp_matrix, fen_map):
     board_matrix = [["*" for _ in range(8)] for _ in range(8)]
-    square_size = warped_size / 8.0
+    if not intersections:
+        print("No intersections provided, cannot map pieces.")
+        return board_matrix
 
     piece_boxes = yolo_result.boxes.xyxy.cpu().numpy()
     piece_classes = yolo_result.boxes.cls.cpu().numpy().astype(int)
     class_names = yolo_result.names
 
+    grid_side_len = int(math.sqrt(len(intersections)))
+
     for i in range(len(piece_boxes)):
         box = piece_boxes[i]
-        # Use the center of the base of the bounding box for better piece placement
-        xb, yb = (box[0] + box[2]) / 2, box[1] * 0.1 + box[3] * 0.9  
+        x1, y1, x2, y2 = box
         
-        transformed_point = cv2.perspectiveTransform(np.array([[[xb, yb]]], dtype=np.float32), warp_matrix)[0][0]
-        tx, ty = transformed_point
+        xb = (x1 + x2) / 2
+        yb = y1 * 0.1 + y2 * 0.9  
+
+        point_to_transform = np.array([[[xb, yb]]], dtype=np.float32)
         
-        if 0 <= tx < warped_size and 0 <= ty < warped_size:
-            c = int(tx / square_size)
-            r = int(ty / square_size)
+        transformed_point = cv2.perspectiveTransform(point_to_transform, warp_matrix)
+        tx, ty = transformed_point[0][0]
+        
 
-            class_name = class_names[piece_classes[i]]
-            fen_char = fen_map.get(class_name)
-            if fen_char:
-                # Avoid overwriting a square if it's already occupied
-                if board_matrix[r][c] == "*":
-                    board_matrix[r][c] = fen_char
-                else:
-                    print(f"Warning: Multiple pieces detected in square ({r},{c}). Keeping first one.")
-
+        found_square = False
+        for r in range(8):
+            for c in range(8):
+                top_left_idx = r * grid_side_len + c
+                top_right_idx = top_left_idx + 1
+                bottom_left_idx = (r + 1) * grid_side_len + c
+                
+                if (intersections[top_left_idx][0] < tx < intersections[top_right_idx][0] and
+                    intersections[top_left_idx][1] < ty < intersections[bottom_left_idx][1]):
+                    
+                    class_name = class_names[piece_classes[i]]
+                    fen_char = fen_map.get(class_name)
+                    
+                    if fen_char:
+                        board_matrix[r][c] = fen_char
+                    
+                    found_square = True
+                    break
+            if found_square:
+                break
+    
     return board_matrix
 
 def matrix_to_fen(board_matrix):
@@ -164,169 +629,189 @@ def matrix_to_fen(board_matrix):
         fen_rows.append(fen_row)
     return "/".join(fen_rows)
 
+
 def get_ground_truth_fen(filepath):
     with open('annotations_fen.json', 'r') as f:
         data = json.load(f)
-    return data.get(str(filepath.split("/")[-1]), "")
+    fen_str = data[str(filepath.split("/")[-1])]
+    return fen_str
+
 
 def process_fen(board_matrix, filename):
+    def fen_to_full_str(fen_str):
+        result = ""
+        for char in fen_str:
+            if char.isdigit():
+                result += "*" * int(char)
+            else:
+                result += char
+        return result
+
     pred_fen = matrix_to_fen(board_matrix)
-    exp_fen = get_ground_truth_fen(filename).split(' ')[0] 
-    pred_string = "".join("".join(row) for row in board_matrix)
+    exp_fen = get_ground_truth_fen(filename)
+
+    pred_string = "/".join("".join(row) for row in board_matrix)
+    exp_string = fen_to_full_str(exp_fen)
     
-    # Create comparable string from expected FEN
-    exp_string_full = ""
-    for char in exp_fen.replace('/', ''):
-        if char.isdigit():
-            exp_string_full += '*' * int(char)
-        else:
-            exp_string_full += char
+    edit_dist = edit_distance(pred_string, exp_string)
     
-    edit_dist = edit_distance(pred_string, exp_string_full)
-    return {"pred_fen": pred_fen, "exp_fen": exp_fen, "edit_dist": edit_dist}
+    return {"pred_fen":pred_fen, "exp_fen": exp_fen, "edit_dist":edit_dist}
+
+
+def rotate_matrix(rotation, board_matrix):
+    np_matrix = np.array(board_matrix)
+    if rotation == cv2.ROTATE_90_CLOCKWISE:
+        rotated_matrix = np.rot90(np_matrix, k=-1)
+    elif rotation == cv2.ROTATE_180:
+        rotated_matrix = np.rot90(np_matrix, k=2)
+    elif rotation == cv2.ROTATE_90_COUNTERCLOCKWISE:
+        rotated_matrix = np.rot90(np_matrix, k=1)
+    else:
+        return board_matrix
+    return rotated_matrix.tolist()
+
 
 # ==================================== Main Execution ====================================================
 
-def process_single_image(filename, piece_model, corner_model, device):
+#model_path = "models/myYolov8n/weights/best.pt"
+model_path = "models/myYolo11s/weights/best.pt"
+image_directory = "dataset/images/"
+mismatches_path = "mismatches/task3/mismatch_log.csv"
+
+def process_single_image(filename):
+    model = YOLO(model_path)
     print(f"\n--- Processing {filename} ---")
-    try:
-        # 1. Detect inner corners using the U-Net model
-        print("Detecting chessboard corners with U-Net model...")
-        corners = predict_board_corners(corner_model, filename, device, img_size=640)
-        if not corners or len(corners) != 4:
-            print("Error: Could not find 4 chessboard corners with model.")
-            return None
 
-        # 2. Predict pieces with YOLO
-        print("Predicting pieces...")
-        yolo_result = piece_model.predict(filename, verbose=False)[0]
+    # 1. Predict pieces
+    print("Predicting pieces...")
+    results = model.predict(filename, verbose=False)
+    yolo_result = results[0]
 
-        # 3. Rectify perspective and calculate grid
-        print("Correcting perspective and calculating grid...")
-        img_color = cv2.imread(filename, cv2.IMREAD_COLOR)
-        intersections, all_found, warp_matrix, _ = get_board_squares(corners, img_color, filename)
+    # 2. Detect corners
+    print("Detecting chessboard corners...")
+    corners = get_board_cornes(filename)
+    if not corners or len(corners) != 4:
+        print("Error: Could not find chessboard corners. Skipping file.")
 
-        if not all_found: 
-            print("Error: Could not determine the board grid.")
-            return None
+    # 3. Rectify perspective
+    print("Correcting perspective and finding grid...")
+    img_color = cv2.imread(filename, cv2.IMREAD_COLOR)
+    img_gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+    intersections, all_found, warp_matrix, warped_img = get_board_squares(corners, img_gray, img_color, filename)
 
-        # 4. Map pieces to board (already correctly oriented)
-        print("Mapping pieces to squares...")
-        board_matrix = map_pieces_to_board(yolo_result, warp_matrix, FEN_MAP, warped_size=800)
+    if not intersections or not all_found:
+        print("Error: Could not determine the board grid. Skipping file.")
+        return None
 
-        # 5. Compute FEN and get edit distance
-        print("Calculating FEN and edit distance...")
-        fen_results = process_fen(board_matrix, filename)
-        return fen_results
+    # 4. Map pieces to board
+    print("Mapping pieces to squares...")
+    board_matrix = map_pieces_to_board(yolo_result, intersections, warp_matrix, FEN_MAP)
 
-    except Exception as e:
-        print(f"An unexpected error occurred while processing {filename}: {e}")
-        return {"error": str(e)}
+    # 5. Determine orientation
+    print("Determining board orientation...")
+    rotation, _, corner = find_orientation(warped_img)
+    print(f"Horse detected at corner: {corner}")
+    if rotation in [cv2.ROTATE_180, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE]:
+        board_matrix = rotate_matrix(rotation, board_matrix)
 
-def process_list(image_files, piece_model, corner_model, device, mismatches_path):
+    # 6. Compute FEN and get edit distance
+    print("Processing FEN")
+    fen_results = process_fen(board_matrix, filename)
+    return fen_results
+
+
+def process_list(image_files):
     edit_distances = []
     csv_headers = ['filename', 'predicted_fen', 'true_fen', 'edit_distance']
     
+    # Thread-safe lock for writing to CSV and updating edit_distances
     csv_lock = threading.Lock()
     
     with open(mismatches_path, 'w', newline='', encoding='utf-8') as csvfile:
         csv_writer = csv.writer(csvfile)
         csv_writer.writerow(csv_headers)
         
-        with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
-            future_to_filename = {
-                executor.submit(process_single_image, filename, piece_model, corner_model, device): filename 
-                for filename in image_files
-            }
+        # Use ThreadPoolExecutor for parallel processing
+        with ThreadPoolExecutor(max_workers=4) as executor:  # Adjust max_workers as needed
+            # Submit all tasks using the thread-safe wrapper function
+            future_to_filename = {executor.submit(process_single_image, filename): filename for filename in image_files}
             
+            # Process completed tasks
             for future in as_completed(future_to_filename):
                 filename = future_to_filename[future]
                 try:
                     img_results = future.result()
-                    if img_results is None: continue
-                    
-                    if "error" in img_results:
-                         with csv_lock: csv_writer.writerow([filename, 'ERROR', img_results['error'], -1])
-                         continue
-
+                    if img_results is None:
+                        continue
+                        
                     curr_edit_dist = img_results['edit_dist']
+                    
+                    # Thread-safe operations
                     with csv_lock:
                         edit_distances.append(curr_edit_dist)
+                        
                         if curr_edit_dist != 0:
-                            print(f"Prediction error for {filename.split('/')[-1]}! Edit dist: {curr_edit_dist}. Logging.")
-                            row_data = [filename, img_results['pred_fen'], img_results['exp_fen'], curr_edit_dist]
+                            print(f"Prediction error found for {filename}! Edit distance: {curr_edit_dist}. Logging mismatch.")
+                            true_fen = img_results['exp_fen']
+                            predicted_fen = img_results['pred_fen']
+                            row_data = [filename, predicted_fen, true_fen, curr_edit_dist]
                             csv_writer.writerow(row_data)
                         else:
-                            print(f"Success for {filename.split('/')[-1]} (edit distance: 0)")
-                except Exception as e:
-                    print(f"A critical error occurred for future of {filename}: {e}")
-                    with csv_lock: csv_writer.writerow([filename, 'CRITICAL_ERROR', str(e), -1])
+                            print(f"Successfully processed {filename} (edit distance: 0)")
 
-    if edit_distances:
-        mean_dist = np.mean(edit_distances)
-        print(f'\nMean edit distance across {len(edit_distances)} images: {mean_dist:.4f}')
-    else:
-        print("No images were successfully processed.")
+                except Exception as e:
+                    print(f"An unexpected error occurred while processing {filename}: {e}")
+                    with csv_lock:
+                        csv_writer.writerow([filename, 'ERROR', str(e), -1])
+
+    mean_dist = np.mean(edit_distances)
+    print(f'\nMean edit distance across {len(edit_distances)} images: {mean_dist:.4f}')
     print(f"Mismatch log saved to: {mismatches_path}")
 
-def process_all_images(piece_model, corner_model, device):
-    image_directory = IMAGE_DIRECTORY
-    mismatches_path = "mismatches/task3/mismatch_log.csv"
-    all_files = [os.path.join(dp, f) for dp, dn, fn in os.walk(os.path.expanduser(image_directory)) for f in fn]
-    image_files = [f for f in all_files if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-    process_list(image_files, piece_model, corner_model, device, mismatches_path)
 
-def process_mismatches(piece_model, corner_model, device):
-    mismatches_path = "mismatches/task3/mismatch_log.csv"
-    if not os.path.exists(mismatches_path):
-        print(f"No mismatch file found at {mismatches_path}")
-        return
+def process_all_images():
+    all_folders = os.listdir(image_directory)
+    image_files = []
+    for folder in all_folders:
+        folder_path = os.path.join(image_directory, folder)
+        if os.path.isdir(folder_path):
+            for filename in os.listdir(folder_path):
+                if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    image_files.append(os.path.join(folder_path, filename))
+    process_list(image_files)
+
+
+def process_mismatches():
     mismatches = pd.read_csv(mismatches_path)
     if mismatches.empty:
-        print("No mismatches to re-process.")
+        print("No mismatches found.")
         return
-    process_list(list(mismatches['filename']), piece_model, corner_model, device, mismatches_path)
+    process_list(list(mismatches['filename']))
 
 
-if __name__ == '__main__':
-    # --- Configuration ---
-    PIECE_MODEL_PATH = "models/myYolo11s/weights/best.pt"
-    CORNER_MODEL_PATH = 'best_chessboard_model.pth'  
-    IMAGE_DIRECTORY = "dataset/images/"
-    MISMATCHES_PATH = "mismatches/task3/mismatch_log.csv"
+#print(process_single_image("complete_dataset/images/56/G056_IMG023.jpg"))
+process_all_images()
+#process_mismatches()
 
-    # --- Model Loading ---
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {DEVICE}")
+"""
+board = chess.Board(fen_string)
+fen_svg = chess.svg.board(board=board)
+output_filename = "chessboard_render.png"
+cairosvg.svg2png(bytestring=fen_svg.encode('utf-8'), write_to=output_filename)
+print(f"Chessboard image saved to {output_filename}")
+"""
 
-    # Load Piece Detection Model (YOLO)
-    piece_model = YOLO(PIECE_MODEL_PATH)
+# complete_dataset/images/56/G056_IMG023.jpg
+# 2r3q1/k1ppp1bp/p3p1b1/5n2/4N3/4NP2/P1PPPB1P/2R2Q
+# r2q1rk1/ppp1bppp/2p1b3/3n4/2N5/2NP3P/PPPB1PP1/R2Q2KR
+# 19
 
-    # Load Corner Detection Model (U-Net)
-    corner_model = UNetWithResnetEncoder(n_class=4, pretrained=False).to(DEVICE)
-    try:
-        corner_model.load_state_dict(torch.load(CORNER_MODEL_PATH, map_location=DEVICE))
-        corner_model.eval()
-        print("Corner detection model loaded successfully.")
-    except FileNotFoundError:
-        print(f"FATAL ERROR: Corner model not found at '{CORNER_MODEL_PATH}'.")
-        print("Please ensure the trained U-Net model file is in the correct location.")
-        exit()
-    except Exception as e:
-        print(f"FATAL ERROR: Could not load corner model. Error: {e}")
-        exit()
-        
-    # --- Execution ---
-    # Choose one of the following functions to run:
-    
-    # To process all images in the dataset directory:
-    process_all_images(piece_model, corner_model, DEVICE)
-    
-    # To re-run only the images that were previously logged as mismatches:
-    # process_mismatches(piece_model, corner_model, DEVICE)
+# complete_dataset/images/58/G033_IMG011.jpg,
+# RP4pr/NP4p1/BP1B1npb/Q2p2pq/3n3k/RPN3pb/KP4p1/1P4pr
+# r1bqkb1r/pppp1ppp/2n5/8/2Bpn3/5N2/PPP2PPP/RNBQ1RK1
+# 45
 
-    # To process a single image for debugging:
-    #single_image_path = "data/images/G000_IMG087.jpg"
-    #result = process_single_image(single_image_path, piece_model, corner_model, DEVICE)
-    #if result:
-    #    print(json.dumps(result, indent=2))
+# complete_dataset/images/33/G033_IMG011.jpg
+# R3P1pr/1P4pn/BPN2pqb/Q2P1p2/K2Pp2k/BPN2npb/1P4p1/RP4pr
+# rnb1kb1r/ppq2ppp/2pp1n2/P3p3/3PP3/2N2N2/1PP2PPP/R1BQKB1R
+# 40
