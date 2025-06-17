@@ -179,12 +179,15 @@ output_images/
 annotated_images/
 complete_dataset/*
 !complete_dataset/annotations.json
+dataset/
 
 input.json
 output.json
 debug/
 .vscode
 *visualisations*/
+
+mismatches/
 results*
 *Yolov8x*
 *best_model*
