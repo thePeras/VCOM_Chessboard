@@ -188,3 +188,6 @@ debug/
 *visualisations*/
 
 mismatches/
+results*
+*Yolov8x*
+*best_model*
