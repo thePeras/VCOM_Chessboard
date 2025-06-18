@@ -1290,8 +1290,8 @@ def main():
                         help="The type of the model to use/train")
     parser.add_argument("--model-name", type=str, default="best_model",
                         help="Name of the save model weights for inference (e.g. best_model). Do not include '.pth', since we manually add it")
-    parser.add_argument("--batch-size", type=int, default=16,
-                        help="The batch size for training or inference")
+    parser.add_argument("--batch-size", type=int, default=8,
+                        help="The batch size for training or inference. Default is 8")
     parser.add_argument("--num-workers", type=int, default=8,
                         help="How many subprocesses to use for the data loading process")
     args = parser.parse_args()
