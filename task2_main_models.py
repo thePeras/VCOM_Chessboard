@@ -181,6 +181,8 @@ def board_to_chars(board):
 def load_image(image_file: str):
     # Load with about 750x750 (3000 / 4)
     image = cv2.imread(image_file, cv2.IMREAD_REDUCED_COLOR_4)
+    if image is None:
+        print(f"\n>> [ERROR] Image not found at {image_file}\n")
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     return image
 
