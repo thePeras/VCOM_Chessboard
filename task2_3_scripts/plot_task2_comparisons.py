@@ -16,7 +16,7 @@ from sklearn.metrics import (
 import matplotlib.pyplot as plt
 import numpy as np
 from typing import Optional
-
+import seaborn as sns
 
 def load_results(filename):
     with open(f"{filename}.pkl", "rb") as f:
@@ -33,6 +33,7 @@ def process_results(
     legend_label: Optional[str] = None,
     show_single_plots: bool = False,
     set_title: bool = True,
+    include_rounded_mae: bool = False,
 ):
     """
     Args:
@@ -52,6 +53,8 @@ def process_results(
     if labels is None:
         labels = result_dirs
     assert len(labels) == len(result_dirs)
+
+    colors = sns.dark_palette("#69d", reverse=True, n_colors=len(labels))
 
     all_metrics = []
     for model_label, result_dir in zip(labels, result_dirs):
@@ -122,11 +125,14 @@ def process_results(
     if len(all_metrics) > 1:
         metric_names = [
             "MAE ($\\downarrow$)",
-            "Rounded MAE ($\\downarrow$)",
             "RMSE ($\\downarrow$)",
             "Acc $\\pm$ 1 ($\\uparrow$)",
             "Rounded Acc ($\\uparrow$)",
         ]
+        if include_rounded_mae:
+            # Insert just after MAE
+            metric_names.insert(1, "Rounded MAE ($\\downarrow$)")
+
         num_metrics = len(metric_names)
         num_models = len(all_metrics)
 
@@ -141,13 +147,13 @@ def process_results(
         for i, metric_set in enumerate(all_metrics):
             values = [metric_set[m] for m in metric_names]
             offset = i * width
-            bars = ax.bar(x + offset, values, width, label=metric_set["model"])
+            bars = ax.bar(x + offset, values, width, label=metric_set["model"], color=colors[i])
 
             # Add annotations
             for bar in bars:
                 height = bar.get_height()
                 ax.annotate(
-                    f"{height:.3f}",
+                    f"{height:.4f}",
                     xy=(bar.get_x() + bar.get_width() / 2, height),
                     xytext=(0, 3),
                     textcoords="offset points",
@@ -159,6 +165,7 @@ def process_results(
         ax.set_ylabel("Score")
         if set_title:
             ax.set_title("Model Comparison by Metrics")
+        # ax.set_facecolor(colors)
         ax.set_xticks(x + (num_models - 1) * width / 2)
         ax.set_xticklabels(metric_names)
         if legend_label is not None:
@@ -252,8 +259,8 @@ def main():
     )
 
     best_model_30 = "results-best_model"
-    best_model_100 = "results-best_model_100"
-    best_model_200 = "results-best_model_200"
+    best_model_100 = "results-best_model_100_rounded_mae"
+    best_model_200 = "results-best_model_200_rounded_mae"
 
     # Compare best models
     process_results(
@@ -274,6 +281,7 @@ def main():
         ],
         legend_label="Models",
         set_title=False,
+        include_rounded_mae=True,
     )
 
     # Best model results
