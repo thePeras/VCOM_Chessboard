@@ -36,7 +36,7 @@ try:
     # We place it in a non-obligatory file
     from task2_3_scripts.draw_board import render_board_from_matrix
 except ImportError as e:
-    print(f"Could not import `draw_board.py`")
+    print(f"Could not import `task2_3_scripts.draw_board.py`")
     print("Don't worry! It's not required to run Task 2, since it's only used for rendering the board image (digital twin)")
     print("\n")
 
