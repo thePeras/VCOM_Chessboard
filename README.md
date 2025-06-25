@@ -2,27 +2,30 @@
 
 > **Project**
 > <br />
-> **Course Unit:** [Computer Vision 2024/2025](https://sigarra.up.pt/feup/pt/ucurr_geral.ficha_uc_view?pv_ocorrencia_id=542589 "Course Link")
+> Course Unit: [Computer Vision](https://sigarra.up.pt/feup/en/ucurr_geral.ficha_uc_view?pv_ocorrencia_id=542589 "Visão Computacional"), 1nd year
 > <br />
-> **Course:** Master's in Artificial Intelligence (MIA)
+> Course: [Master in Artificial Intelligence](https://sigarra.up.pt/feup/en/cur_geral.cur_view?pv_curso_id=30901)
 > <br />
-> **Faculty:** Faculty of Engineering & Faculty of Science, University of Porto
+> Faculty: **FEUP** (Faculty of Engineering of the University of Porto)
 > <br />
-> **Report (Task 1):** [Classical CV Approach](./docs/task1_report.pdf)
+> Assessment: ([PDF](./docs/assessment.pdf))
 > <br />
-> **Report (Tasks 2 & 3):** [Deep Learning Approach](./docs/task_2_3_report.pdf)
+> Report **(Task 1)**: [Classical CV Approach](./docs/task1_report.pdf)
+> <br />
+> Report **(Tasks 2 & 3):** [Deep Learning Approach](./docs/task_2_3_report.pdf)
+> <br />
+> Project evaluation: **20**/20
 
 ---
 
-
 ## Project Goals
 
-This project tackles the problem of analyzing chessboard images to extract piece positions and reconstruct the full game state. We approached it in three phases, starting with traditional computer vision methods and progressively incorporating deep learning to handle the trickier aspects.
+Analyzing chessboard images to extract piece positions and reconstruct the full game state. Both classical computer vision and deep learning methods were explored.
 
 **The three tasks:**
-- **Task 1:** Classical CV approach using OpenCV for board detection and piece identification
-- **Task 2:** Deep learning regression model for accurate piece counting  
-- **Task 3:** Full pipeline combining YOLO object detection with board geometry estimation to generate FEN notation
+- **Task 1:** Classical CV approach using OpenCV for board detection and piece ocupacion identification
+- **Task 2:** Deep learning regression model for accurate piece counting
+- **Task 3:** Full pipeline combining YOLO object detection with board geometry estimation to generate FEN notation and digital twin representation
 
 ## Technical approach
 
@@ -86,6 +89,7 @@ This model achieved the following results results:
 Interestingly, the YOLOv8x model developed for Task 3, while not specifically designed for counting, achieved a plain validation MAE of 0.0233 without rounding, outperforming the dedicated regression models in that specific scenario, likely due to its larger size and robust training. However, with the rounding strategy, the specialized EfficientNetV2-S model remained superior for this task.
 
 ![Task 2](docs/task2.png)
+
 
 ### Task 3: Bounding Box Detection and Digital Twin Extraction
 
