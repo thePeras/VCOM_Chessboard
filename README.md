@@ -99,9 +99,9 @@ Our approach evolved significantly as we encountered challenges, moving from tra
 
 #### **1. Bounding Box Detection with YOLO**
 
-To identify and locate each chess piece, we used the You Only Look Once (YOLO) architecture, using the Ultralytics framework. We experimented with several YOLO variants, including YOLOv8n, YOLOv8x, and YOLO-L1s, training each for 100 epochs on the ChessRed dataset. 
+To identify and locate each chess piece, we used the You Only Look Once (YOLO) architecture, using the Ultralytics framework. We experimented with several YOLO variants, including YOLOv8n, YOLOv8x, and YOLO11s, training each for 100 epochs on the ChessRed dataset. 
 
-* **Models Trained**: YOLOv8n, YOLOv8x, YOLO-L1s. 
+* **Models Trained**: YOLOv8n, YOLOv8x, YOLO11s. 
 * **Performance Metric**: Mean Average Precision (mAP) at IoU thresholds of 50% (mAP50) and 50-95% (mAP50-95). 
 
 The **YOLOv8x** model emerged as the top performer, achieving a **mAP50 of 0.995** and a **mAP50-95 of 0.875**, and was therefore chosen for the final pipeline. 
